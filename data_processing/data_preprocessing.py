@@ -6,6 +6,8 @@ import numpy as np
 from collections import defaultdict
 from tqdm import tqdm
 import random
+import pickle
+from networkx.classes.filters import no_filter
 
 def load_nodes(file_path):
     """
@@ -156,19 +158,23 @@ def create_graph(nodes, channels, bitcoin_values=None):
     for (node1, node2), weight in edge_weights.items():
         G.add_edge(node1, node2, weight=weight)
     
-    
     print(f"图创建完成，包含 {G.number_of_nodes()} 个节点和 {G.number_of_edges()} 条边")
 
+    # 获取最大连通分量
     connected_components = list(nx.connected_components(G))
     largest_cc = max(connected_components, key=len)
-    G_largest_cc = G.subgraph(largest_cc)
+    G_largest_cc = G.subgraph(largest_cc).copy()
     print(f"最大连通分量包含 {G_largest_cc.number_of_nodes()} 个节点和 {G_largest_cc.number_of_edges()} 条边")
 
-    count = 0
-    for node in G.nodes():
-        if G.degree(node) == 0:
-            count += 1
-    print(f"度为0的节点数量: {count}")
+    # 迭代移除度为1的节点
+    while True:
+        degree_one_nodes = [node for node in G_largest_cc.nodes() if G_largest_cc.degree(node) == 1]
+        if not degree_one_nodes:
+            break
+        G_largest_cc.remove_nodes_from(degree_one_nodes)
+        print(f"移除 {len(degree_one_nodes)} 个度为1的节点")
+    
+    print(f"处理后的图包含 {G_largest_cc.number_of_nodes()} 个节点和 {G_largest_cc.number_of_edges()} 条边")
     return G_largest_cc
 
 def visualize_graph(G, output_path=None, max_nodes=30):
@@ -304,120 +310,94 @@ def test_find_cycles():
 
 def generate_candidate_paths(G, num_paths=10, weight_increment=10, edge_coverage_threshold=1.0):
     """
-    基于迪杰斯特拉算法生成候选循环路径集
+    优化后的基于迪杰斯特拉算法生成候选循环路径集
     
-    参数:
-    G: NetworkX图对象
-    num_paths: 需要生成的路径数量（默认10）
-    weight_increment: 每次找到路径后增加的权重（默认10）
-    edge_coverage_threshold: 边覆盖率阈值（0.0-1.0），达到该阈值时停止查找（默认1.0，即100%覆盖）
-    
-    返回:
-    paths: 包含所有候选循环路径的列表，每个路径是一个字典，包含path、weight和edges
+    参数和返回值同原函数
     """
     print(f"开始生成 {num_paths} 条候选循环路径...")
     
-    # 创建一个新的图用于权重调整
+    # 创建可修改权重的图副本
     H = G.copy()
-    
-    # 初始化所有边的权重为1
     nx.set_edge_attributes(H, 1, 'weight')
     
-    # 存储找到的路径
     paths = []
-    
-    # 记录已经找到的路径的边集合
     path_edges = set()
-    
-    # 获取图中所有边的总数
     total_edges = G.number_of_edges()
     
+    if len(H.nodes) < 3:
+        print("节点数量不足，无法形成循环路径")
+        return paths
+    
     try:
-        # 获取所有节点
         nodes = list(H.nodes())
-        
-        # 确保图中有足够的节点形成循环
-        if len(nodes) < 3:
-            print("节点数量不足，无法形成循环路径")
-            return paths
-        
-        # 迭代生成指定数量的循环路径
-        for i in range(num_paths):
-            # 尝试找到权重最小的循环
+        for _ in range(num_paths):
             min_cycle = None
             min_cycle_weight = float('inf')
             
-            # 对每个节点，尝试找到以它为起点的最小权重循环
+            # 预处理：为每个节点生成邻居的最短路径缓存
+            node_neighbor_cache = {}
             for source in nodes:
-                # 创建一个临时图，移除起点
-                temp_graph = H.copy()
-                
-                # 获取起点的所有邻居
                 neighbors = list(H.neighbors(source))
+                if len(neighbors) < 2:
+                    continue
+                    
+                temp_graph = nx.subgraph_view(H, filter_node=lambda n, src=source: n != src)
                 
-                # 如果节点没有邻居，跳过
-                if not neighbors:
+                # 预计算每个邻居到其他节点的最短路径（修正变量名）
+                neighbor_distances = {}
+                for u in neighbors:
+                    try:
+                        lengths, dijkstra_paths = nx.single_source_dijkstra(temp_graph, u, weight='weight')
+                        neighbor_distances[u] = (lengths, dijkstra_paths)
+                    except nx.NetworkXNoPath:
+                        neighbor_distances[u] = ({}, {})
+                
+                node_neighbor_cache[source] = (neighbors, neighbor_distances)
+            
+            # 遍历所有可能的source寻找最小环
+            for source in nodes:
+                if source not in node_neighbor_cache:
+                    continue
+                neighbors, neighbor_distances = node_neighbor_cache[source]
+                if len(neighbors) < 2:
                     continue
                 
-                # 移除起点但保留其连接信息
-                temp_graph.remove_node(source)
-                
-                # 对每对邻居节点，尝试找到它们之间的最短路径
-                for i, neighbor1 in enumerate(neighbors):
-                    for neighbor2 in neighbors[i+1:]:
-                        # 检查两个邻居是否在临时图中
-                        if not (temp_graph.has_node(neighbor1) and temp_graph.has_node(neighbor2)):
-                            continue
-                            
-                        # 检查两个邻居之间是否有路径
-                        if not nx.has_path(temp_graph, neighbor1, neighbor2):
+                for i in range(len(neighbors)):
+                    u = neighbors[i]
+                    u_lengths, u_dijkstra_paths = neighbor_distances.get(u, ({}, {}))
+                    for j in range(i+1, len(neighbors)):
+                        v = neighbors[j]
+                        if v not in u_lengths:
                             continue
                         
-                        try:
-                            # 找到两个邻居之间的最短路径
-                            path = nx.dijkstra_path(temp_graph, neighbor1, neighbor2, weight='weight')
-                            path_weight = nx.dijkstra_path_length(temp_graph, neighbor1, neighbor2, weight='weight')
-                            
-                            # 计算完整循环的权重（加上从source到两个邻居的边的权重）
-                            total_weight = path_weight
-                            total_weight += H[source][neighbor1].get('weight', 1)
-                            total_weight += H[source][neighbor2].get('weight', 1)
-                            
-                            # 如果找到更小权重的循环，更新最小循环
-                            if total_weight < min_cycle_weight:
-                                # 构建完整的循环路径
-                                cycle_path = [source, neighbor1] + path[1:] + [source]
-                                cycle_edges = [(cycle_path[j], cycle_path[j+1]) for j in range(len(cycle_path)-1)]
-                                
-                                min_cycle = {
-                                    'path': cycle_path,
-                                    'weight': total_weight,
-                                    'edges': cycle_edges
-                                }
-                                min_cycle_weight = total_weight
+                        path_length = u_lengths[v]
+                        total_weight = path_length + H[source][u].get('weight', 1) + H[source][v].get('weight', 1)
                         
-                        except (nx.NetworkXNoPath, nx.NodeNotFound):
-                            continue
+                        if total_weight < min_cycle_weight:
+                            # 使用修正后的变量名获取路径
+                            dijkstra_path = u_dijkstra_paths.get(v, [])
+                            cycle_path = [source, u] + dijkstra_path[1:] + [source]
+                            cycle_edges = list(zip(cycle_path[:-1], cycle_path[1:]))
+                            
+                            min_cycle = {
+                                'path': cycle_path,
+                                'weight': total_weight,
+                                'edges': cycle_edges
+                            }
+                            min_cycle_weight = total_weight
             
-            # 如果找到了最小循环，添加到路径集合并更新边权重
+            # 更新路径和权重
             if min_cycle:
                 paths.append(min_cycle)
                 
-                # 更新路径上所有边的权重
+                # 增加路径边的权重
                 for u, v in min_cycle['edges']:
-                    # 获取当前权重
-                    current_weight = H[u][v].get('weight', 1)
-                    # 增加权重
-                    H[u][v]['weight'] = current_weight + weight_increment
-                    # 记录这条边
-                    edge = tuple(sorted([u, v]))
-                    path_edges.add(edge)
+                    H[u][v]['weight'] = H[u][v].get('weight', 1) + weight_increment
+                    path_edges.add(tuple(sorted((u, v))))
                 
-                # 计算当前边覆盖率
                 current_coverage = len(path_edges) / total_edges
                 print(f"已生成 {len(paths)} 条循环路径，当前路径权重: {min_cycle['weight']}，边覆盖率: {current_coverage:.2%}")
                 
-                # 检查是否达到边覆盖率阈值
                 if current_coverage >= edge_coverage_threshold:
                     print(f"已达到目标边覆盖率 {edge_coverage_threshold:.2%}，停止查找")
                     break
@@ -427,19 +407,65 @@ def generate_candidate_paths(G, num_paths=10, weight_increment=10, edge_coverage
                 
     except Exception as e:
         print(f"生成路径时发生错误: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        raise
     
-    # 计算路径的多样性
-    total_edges = len(path_edges)
-    avg_path_length = sum(len(p['path']) for p in paths) / len(paths) if paths else 0
+    # 输出统计信息
+    total_edges_covered = len(path_edges)
+    avg_length = sum(len(p['path']) for p in paths) / len(paths) if paths else 0
     
     print(f"\n路径生成完成:")
     print(f"共生成 {len(paths)} 条循环路径")
-    print(f"平均路径长度: {avg_path_length:.2f}")
-    print(f"使用的不同边数量: {total_edges}")
+    print(f"平均路径长度: {avg_length:.2f}")
+    print(f"使用的不同边数量: {total_edges_covered}")
     
     return paths
+
+def find_k_min_weight_cycles(graph, k=10):
+    # Step 1: Initialize all edge weights to 1
+    for u, v in graph.edges():
+        graph[u][v]['weight'] = 1
+
+    min_cycles = []  # Store the k minimum weight cycles
+
+    for _ in range(k):
+        # Step 2: Find the minimum weight cycle using DFS
+        min_cycle = None
+        min_cycle_weight = float('inf')
+
+        visited = set()
+        
+        def dfs(node, path, path_weight):
+            nonlocal min_cycle, min_cycle_weight
+            visited.add(node)
+            for neighbor in graph.neighbors(node):
+                if neighbor in path:  # Found a cycle
+                    cycle = path[path.index(neighbor):] + [neighbor]
+                    cycle_weight = path_weight + graph[node][neighbor]['weight']
+                    if len(cycle) >= 4 and cycle_weight < min_cycle_weight:  # At least 3 nodes
+                        min_cycle = cycle
+                        min_cycle_weight = cycle_weight
+                elif neighbor not in visited:
+                    dfs(neighbor, path + [neighbor], path_weight + graph[node][neighbor]['weight'])
+            visited.remove(node)
+
+        # Start DFS from each node
+        for node in graph.nodes():
+            if node not in visited:
+                dfs(node, [node], 0)
+
+        if min_cycle is None:
+            break  # No more cycles found
+
+        # Step 3: Add the found cycle to the result
+        min_cycles.append((min_cycle, min_cycle_weight))
+        print(f"找到路径: {min_cycle}, 权重: {min_cycle_weight}")
+
+        # Step 4: Update weights of edges in the cycle
+        for i in range(len(min_cycle) - 1):
+            u, v = min_cycle[i], min_cycle[i + 1]
+            graph[u][v]['weight'] += 10
+
+    return min_cycles
 
 def test_generate_paths():
     """
@@ -642,7 +668,7 @@ def test_generate_paths_complex():
     else:
         print("未找到任何路径")
 
-def main():
+def pross_data():
     # 设置文件路径
     base_dir = "d:/Doc/毕设/code/data/raw"
     nodes_file = os.path.join(base_dir, "allnodes.txt")
@@ -657,47 +683,32 @@ def main():
     # 创建图,只保留最大连通分量
     G = create_graph(nodes, channels)
     
-    # 查找循环路径
-    print("\n查找循环路径...")
-    cycles = find_cycle_paths(G)
-    print(f"找到 {len(cycles)} 个唯一循环路径")
-    
-    # 打印前5个循环路径示例
-    print("\n循环路径示例（前5个）:")
-    for i, cycle in enumerate(cycles[:5]):
-        print(f"\n循环 {i+1}:")
-        print(f"节点: {' -> '.join(cycle['nodes'])}")
-        print(f"通道: {', '.join(cycle['channels'])}")
-    
     # 分析图的基本特性
-    print("\n图的基本特性:")
+    print("\n图的最大连通分量的基本特性:")
     print(f"节点数量: {G.number_of_nodes()}")
     print(f"边数量: {G.number_of_edges()}")
     
-    # 计算连通分量
-    connected_components = list(nx.connected_components(G))
-    print(f"连通分量数量: {len(connected_components)}")
-    print(f"最大连通分量大小: {len(max(connected_components, key=len))}")
+    # 生成循环路径
+    #paths = generate_candidate_paths(G, num_paths=1000, weight_increment=10, edge_coverage_threshold=1.0)
+    paths = find_k_min_weight_cycles(G, 10)
+    # # 可视化
+    # output_path = os.path.join(base_dir, "..", "processed", "lightning_network_topology.png")
+    # os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    # visualize_graph(G, output_path)
     
-    # 计算平均度
-    degrees = [d for _, d in G.degree()]
-    avg_degree = sum(degrees) / len(degrees) if degrees else 0
-    print(f"平均度: {avg_degree:.2f}")
-    
-    # 可视化
-    output_path = os.path.join(base_dir, "..", "processed", "lightning_network_topology.png")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    visualize_graph(G, output_path)
+    return paths
 
 if __name__ == "__main__":
     # 运行复杂测试
-    test_generate_paths_complex()
+    # test_generate_paths_complex()
     
     # 运行简单测试
     # test_generate_paths()
     
     # 运行环路测试
     # test_find_cycles()
-    
-    # 运行主程序
-    # main()
+
+    # 运行数据预处理
+    paths = pross_data()
+    with open('data/processed/paths.pkl', 'wb') as file:
+        pickle.dump(paths, file)
