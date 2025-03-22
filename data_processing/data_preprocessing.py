@@ -177,42 +177,29 @@ def create_graph(nodes, channels, bitcoin_values=None):
     print(f"处理后的图包含 {G_largest_cc.number_of_nodes()} 个节点和 {G_largest_cc.number_of_edges()} 条边")
     return G_largest_cc
 
-def visualize_graph(G, output_path=None, max_nodes=30):
+def visualize_graph(G, output_path=None, max_nodes=None):
     """
     可视化网络图
     """
     print("可视化网络图...")
     
-    # 获取最大连通分量
-    connected_components = list(nx.connected_components(G))
-    largest_cc = max(connected_components, key=len)
-    G_largest_cc = G.subgraph(largest_cc)
-    print(f"选择最大连通分量进行可视化，包含 {G_largest_cc.number_of_nodes()} 个节点")
-    
-    # 如果节点太多，选择度最大的节点子集
-    if max_nodes and G_largest_cc.number_of_nodes() > max_nodes:
-        print(f"节点数量过多，选择度最大的 {max_nodes} 个节点进行可视化")
-        degrees = dict(G_largest_cc.degree())
-        top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:max_nodes]
-        G_largest_cc = G_largest_cc.subgraph(top_nodes)
-    
     # 设置节点大小基于度
-    node_size = [20 + G_largest_cc.degree(node) * 0.05 for node in G_largest_cc.nodes()]
+    node_size = [20]
     
     # 设置边宽度基于权重
     # edge_width = [0.1 + 0.01 * G_largest_cc[u][v].get('weight', 0) / 10000 for u, v in G_largest_cc.edges()]
     edge_width = 0.3
     # 使用spring布局
-    pos = nx.spring_layout(G_largest_cc, k=0.15, iterations=50)
+    pos = nx.spring_layout(G, k=0.15, iterations=50)
     # pos = nx.kamada_kawai_layout(G_largest_cc)
     # pos = nx.spectral_layout(G_largest_cc)
     plt.figure(figsize=(20, 20))
     
     # 绘制节点
-    nx.draw_networkx_nodes(G_largest_cc, pos, node_size=node_size, node_color='skyblue', alpha=0.8)
+    nx.draw_networkx_nodes(G, pos, node_size=node_size, node_color='skyblue', alpha=0.8)
     
     # 绘制边
-    nx.draw_networkx_edges(G_largest_cc, pos, width=edge_width, alpha=0.3, edge_color='gray')
+    nx.draw_networkx_edges(G, pos, width=edge_width, alpha=0.3, edge_color='gray')
     
     # 为重要节点添加标签
     # important_nodes = sorted(G_largest_cc.nodes(), key=lambda x: G_largest_cc.degree(x), reverse=True)[:20]
@@ -678,25 +665,55 @@ def pross_data():
     # 加载数据
     nodes = load_nodes(nodes_file)
     channels = load_channels(channels_file)
-    # bitcoin_values = load_bitcoin_values(bitcoin_values_file)
+    # bitcoin_vsalues = load_bitcoin_values(bitcoin_values_file)
     
     # 创建图,只保留最大连通分量
     G = create_graph(nodes, channels)
-    
-    # 分析图的基本特性
-    print("\n图的最大连通分量的基本特性:")
-    print(f"节点数量: {G.number_of_nodes()}")
-    print(f"边数量: {G.number_of_edges()}")
-    
+    G_sub = sample_graph(G, 200)
+    visualize_graph(G_sub)
     # 生成循环路径
     #paths = generate_candidate_paths(G, num_paths=1000, weight_increment=10, edge_coverage_threshold=1.0)
-    paths = find_k_min_weight_cycles(G, 10)
+    paths = find_k_min_weight_cycles(G_sub, 10)
     # # 可视化
     # output_path = os.path.join(base_dir, "..", "processed", "lightning_network_topology.png")
     # os.makedirs(os.path.dirname(output_path), exist_ok=True)
     # visualize_graph(G, output_path)
     
     return paths
+
+def sample_graph(G, n):
+    """
+    从图中随机选择n个节点，创建子图并移除度为1的节点
+    
+    参数:
+    G: NetworkX图对象
+    n: 需要采样的节点数量
+    
+    返回:
+    G_sampled: 采样后的图
+    """
+    print(f"开始从{G.number_of_nodes()}个节点中随机采样{n}个节点...")
+    
+    # 确保采样数量不超过总节点数
+    n = min(n, G.number_of_nodes())
+    
+    # 随机选择节点
+    sampled_nodes = random.sample(list(G.nodes()), n)
+    
+    # 创建子图
+    G_sampled = G.subgraph(sampled_nodes).copy()
+    print(f"采样后的图包含 {G_sampled.number_of_nodes()} 个节点和 {G_sampled.number_of_edges()} 条边")
+    
+    # 迭代移除度为1的节点
+    while True:
+        degree_one_nodes = [node for node in G_sampled.nodes() if G_sampled.degree(node) == 1]
+        if not degree_one_nodes:
+            break
+        G_sampled.remove_nodes_from(degree_one_nodes)
+        print(f"移除 {len(degree_one_nodes)} 个度为1的节点")
+    
+    print(f"处理后的图包含 {G_sampled.number_of_nodes()} 个节点和 {G_sampled.number_of_edges()} 条边")
+    return G_sampled
 
 if __name__ == "__main__":
     # 运行复杂测试

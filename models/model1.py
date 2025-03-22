@@ -2,8 +2,6 @@ from pylab import f
 import torch
 import torch.nn as nn
 
-
-
 class GRUCell1(nn.Module):
     # 最初输入为path的初始化的特征，然后每轮输入的是channel特征，输出新的path特征
     def __init__(self, paths, feature_size=32):
@@ -77,3 +75,47 @@ class MessagePassingLayer(nn.Module):
             path_features = self.Gru_Cell2(path_features, channel_features)
         return path_features, channel_features
 
+class Readout(nn.Module):
+    def __init__(self, feature_size=32, k=5, hidden_dim1=8, hidden_dim2=128, out_dim=1):
+        super().__init__()
+        self.fc1 = nn.Linear(feature_size, hidden_dim1)
+        self.lstm = nn.LSTM(input_size=hidden_dim1*k, hidden_size=hidden_dim2, num_layers=1, batch_first=True)
+        self.fc2 = nn.Linear(hidden_dim2, out_dim)
+    
+    def forward(self, x):
+        # x: [B, num_paths, hidden_dim]
+        x = nn.ReLU(self.fc1(x))
+        lstm_out, _ = self.lstm(x.flatten())
+        return self.fc2(lstm_out[:, -1, :])
+
+class PolicyNet(nn.Module):
+    def __init__(self, k=5, feature_dim=32):
+        super().__init__()
+        # 均值网络: 输入k*32，输出K维均值
+        self.mean_layer = Readout(k=k, feature_size=feature_dim, out_dim=k)
+        # 对数标准差网络: 输入k*32，输出K维log(std)
+        self.log_std_layer = Readout(k=k, feature_size=feature_dim, out_dim=k)
+
+    def forward(self, x):
+        # 输入: x形状为 [k, 32]       
+        # 计算均值和对数标准差
+        mean = self.mean_layer(x)  # [K]
+        log_std = self.log_std_layer(x)  # [K]
+        # 约束log_std的范围，防止数值不稳定
+        log_std = torch.clamp(log_std, min=-20, max=2)
+        std = torch.exp(log_std)  # 转换为标准差
+        
+        # 重参数化采样（Reparameterization Trick）
+        noise = torch.randn_like(mean)  # 从标准正态分布采样
+        action = mean + std * noise  # [batch_size, K]
+        return (mean, std, action)
+
+class ValueNet(nn.Module):
+    def __init__(self, k=5, feature_dim=32):
+        super().__init__()
+        self.value = Readout(k=k, feature_size=feature_dim, out_dim=1)
+
+    def forward(self, x):
+        # 输入: x形状为 [k, 32]
+        value = self.value(x)
+        return value

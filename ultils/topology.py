@@ -141,6 +141,19 @@ class WeightedDirectedGraph:
         for i, path in enumerate(cycles, 1):
             print(f"路径{i}: {' → '.join(path)}")
 
+def reward(channels_0, channels_1):
+    """计算两个状态的平衡度, 结果在[-1, 1]之间"""
+    ans = []
+    for idx in range(len(channels_0)):
+        channel0 = channels_0[idx]
+        channel1 = channels_1[idx]
+        k0 = abs(channels_0['weight0'] - channels_0['weight1'])
+        k1 = abs(channels_1['weight0'] - channels_1['weight1'])
+        sum0 = channels_0['weight0'] + channels_0['weight1']
+        sum1 = channels_1['weight0'] + channels_1['weight1']
+        ans.append((k0/sum0-k1/sum1))
+    return sum(ans)/len(ans)
+
 if __name__ == "__main__":
 
     graph = WeightedDirectedGraph()

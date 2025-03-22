@@ -193,7 +193,8 @@ def pross_data():
         channel = {
             'source': nodeID2index[channel['source']],
             'destination': nodeID2index[channel['destination']],
-            'weight': int(channel['satoshis']),
+            'weight0': int(channel['satoshis']/2),
+            'weight1': int(channel['satoshis']/2),
             'path_idx': []
         }
     

@@ -1,0 +1,10 @@
+{
+    "batch_size": 128,
+    "buffer_size": 16384,
+    "trigger_threshold": 25,
+    "path_num": 5,
+    "path_max_len": 6,
+    "model_config": {
+        "hidden_dim": 32
+    }
+}
