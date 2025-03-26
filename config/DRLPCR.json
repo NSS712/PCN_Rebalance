@@ -1,10 +1,17 @@
 {
-    "batch_size": 128,
-    "buffer_size": 16384,
+    "eposide_num": 100,
+    "batch_size": 16,
+    "buffer_size": 256,
     "trigger_threshold": 25,
     "path_num": 5,
     "path_max_len": 6,
+    "learning_rate": 0.001,
+    "gamma": 0.99,
+    "epsilon": 0.1,
+    "c1": 1.0,
+    "c2": 0.01,
     "model_config": {
-        "hidden_dim": 32
+        "hidden_dim": 32,
+        "iterations":5
     }
 }

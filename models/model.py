@@ -1,254 +1,176 @@
+from os import path
+from typing import final
+from networkx import find_asteroidal_triple
+from pylab import f
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-class PathEmbedding(nn.Module):
-    def __init__(self, node_embed_dim=16, balance_dim=2, hidden_dim=32):
+class GRUCell1(nn.Module):
+    "最初输入为path的初始化的特征，然后每轮输入的是channel特征，输出新的path特征"
+    def __init__(self, feature_size=32):
         super().__init__()
-        # 节点ID嵌入层
-        self.node_embed = nn.Embedding(num_embeddings=1000, 
-                                     embedding_dim=node_embed_dim)
-        # 余额特征处理 - 修正输入维度
-        self.balance_fc = nn.Linear(balance_dim, hidden_dim)
-        # 组合层
-        self.combine_fc = nn.Linear(node_embed_dim*2 + hidden_dim, hidden_dim)
-        
-    def forward(self, path_nodes, path_balances):
-        """
-        输入: 
-          path_nodes: [batch_size, paths, path_length] 节点ID序列
-          path_balances: [batch_size, paths, path_length, 2] 双向余额
-        输出:
-          path_emb: [batch_size, paths, path_length-1, hidden_dim] 路径特征
-        """
-        # 获取维度信息
-        batch_size, num_paths, path_length = path_nodes.shape
-        
-        # 节点嵌入
-        node_emb = self.node_embed(path_nodes)  # [B, P, L, node_embed_dim]
-        
-        # 余额特征 - 需要重塑以适应Linear层
-        # 将[B, P, L, 2]重塑为[B*P*L, 2]
-        balance_flat = path_balances.view(-1, 2)
-        balance_feat_flat = self.balance_fc(balance_flat)  # [B*P*L, hidden_dim]
-        # 重塑回[B, P, L, hidden_dim]
-        balance_feat = balance_feat_flat.view(batch_size, num_paths, path_length, -1)
-        
-        # 拼接特征
-        combined = torch.cat([
-            node_emb[:, :, :-1],  # 源节点 [B, P, L-1, node_embed_dim]
-            node_emb[:, :, 1:],   # 目标节点 [B, P, L-1, node_embed_dim]
-            balance_feat[:, :, :-1]  # 对应边的余额 [B, P, L-1, hidden_dim]
-        ], dim=-1)
-        
-        # 重塑以适应Linear层
-        combined_flat = combined.view(-1, node_emb.size(-1)*2 + balance_feat.size(-1))
-        result_flat = self.combine_fc(combined_flat)
-        # 重塑回原始维度
-        return result_flat.view(batch_size, num_paths, path_length-1, -1)
+        self.gru = nn.GRU(input_size=feature_size, hidden_size=feature_size, num_layers=1, batch_first=True)
+        self.paths = []
 
-class ChannelEmbedding(nn.Module):
-    def __init__(self, node_embed_dim=16, balance_dim=2, hidden_dim=32):
-        super().__init__()
-        self.node_embed = nn.Embedding(1000, node_embed_dim)
-        self.balance_fc = nn.Linear(balance_dim*2, hidden_dim)
-        self.combine_fc = nn.Linear(node_embed_dim*2 + hidden_dim, hidden_dim)
-        
-    def forward(self, channel_nodes, channel_balances):
-        """
-        输入:
-          channel_nodes: [batch_size, num_channels, 2] 通道两端节点ID
-          channel_balances: [batch_size, num_channels, 2, 2] 双向余额矩阵
-        输出:
-          channel_emb: [batch_size, num_channels, hidden_dim]
-        """
-        # 获取维度信息
-        batch_size, num_channels = channel_nodes.shape[:2]
-        
-        # 节点嵌入
-        node_emb = self.node_embed(channel_nodes)  # [B, C, 2, node_embed_dim]
-        
-        # 余额处理 - 需要重塑以适应Linear层
-        # 将[B, C, 2, 2]重塑为[B*C, 4]
-        flat_balance = channel_balances.view(-1, 4)  # 展平双向余额
-        balance_feat_flat = self.balance_fc(flat_balance)  # [B*C, hidden_dim]
-        balance_feat = balance_feat_flat.view(batch_size, num_channels, -1)  # [B, C, hidden_dim]
-        
-        # 拼接特征
-        combined = torch.cat([
-            node_emb[:, :, 0],  # 源节点 [B, C, node_embed_dim]
-            node_emb[:, :, 1],  # 目标节点 [B, C, node_embed_dim]
-            balance_feat  # [B, C, hidden_dim]
-        ], dim=-1)  # [B, C, node_embed_dim*2+hidden_dim]
-        
-        # 重塑以适应Linear层
-        combined_flat = combined.view(-1, node_emb.size(-1)*2 + balance_feat.size(-1))
-        result_flat = self.combine_fc(combined_flat)
-        # 重塑回原始维度
-        return result_flat.view(batch_size, num_channels, -1)
+    def forward(self, path_features, channel_features):
+        '''
+        path_features: (batch, num_paths, 32)
+        channel_features: (batch, num_channels, 32)
+        每轮输入的是channel特征,输出新的path特征
+        '''
+        channel_features = channel_features.transpose(1, 0)  #变成(num_channels, batch, 32)
+        path_features = path_features.transpose(1, 0)
+        final_path_feature = []
+        for path_idx, path in enumerate(path_features):
+            final_channel_feature = []
+            for channel_idx in self.paths[path_idx].channels:
+                final_channel_feature.append(channel_features[channel_idx])
+            final_channel_feature = torch.stack(final_channel_feature, dim=0).transpose(0,1) #变成(batch, T, 32)
+            path_feature = self.gru(final_channel_feature, path.unsqueeze(0))
+            path_feature = path_feature[-1].squeeze(0)
+            final_path_feature.append(path_feature)
+        path_features = torch.stack(final_path_feature, dim=1) #变成(batch,num_path, 32)
+        return path_features
 
-class MessagePassingLayer(nn.Module):
-    def __init__(self, hidden_dim=32):
+class GRUCell2(nn.Module):
+    '''输入channel的旧的特征，用每个channel包含的path的特征来更新channel特征'''
+    def __init__(self, feature_size=32):
         super().__init__()
-        # 路径更新的GRU
-        self.path_gru = nn.GRUCell(input_size=hidden_dim, 
-                                 hidden_size=hidden_dim)
-        # 通道更新的GRU
-        self.channel_gru = nn.GRUCell(input_size=hidden_dim,
-                                    hidden_size=hidden_dim)
-        
-    def forward(self, path_states, channel_states, adj_matrix):
-        """
-        输入:
-          path_states: [B, num_paths, hidden_dim]
-          channel_states: [B, num_channels, hidden_dim]
-          adj_matrix: [B, P, C] 路径-通道邻接矩阵
-        输出:
-          new_path_states, new_channel_states
-        """
-        batch_size = path_states.size(0)
-        num_paths = path_states.size(1)
-        num_channels = channel_states.size(1)
-        hidden_dim = path_states.size(2)
-        
-        # 步骤1: 路径到通道的聚合
-        # [B, C, P] * [B, P, H] -> [B, C, H]
-        channel_msg = torch.bmm(
-            adj_matrix.transpose(1, 2),
-            path_states
-        )
-        
-        # 重塑维度匹配GRU输入要求
-        channel_msg = channel_msg.reshape(-1, hidden_dim)
-        channel_states_flat = channel_states.reshape(-1, hidden_dim)
-        
-        # 更新通道状态
-        new_channel = self.channel_gru(
-            channel_states_flat,
-            channel_msg
-        ).reshape(batch_size, num_channels, hidden_dim)
-        
-        # 步骤2: 通道到路径的更新
-        # [B, P, C] * [B, C, H] -> [B, P, H]
-        path_msg = torch.bmm(adj_matrix, new_channel)
-        
-        # 重塑维度匹配GRU输入要求
-        path_states_flat = path_states.reshape(-1, hidden_dim)
-        path_msg_flat = path_msg.reshape(-1, hidden_dim)
-        
-        # 更新路径状态
-        new_path = self.path_gru(
-            path_states_flat,
-            path_msg_flat
-        ).reshape(batch_size, num_paths, hidden_dim)
-        
-        return new_path, new_channel
+        self.gru = nn.GRU(input_size=feature_size, hidden_size=feature_size, num_layers=1, batch_first=True)
+        self.channels = []
+    
+    def forward(self, path_features, channel_features):
+
+        channel_features = channel_features.transpose(1, 0)  #变成(num_channels, batch, 32)
+        path_features = path_features.transpose(1, 0)
+        final_channel_feature = []
+        for channel_idx, channel in enumerate(channel_features):
+            f = torch.zeros(channel_features[0].shape)
+            for path_idx in self.channels[channel_idx].path:
+                f = f + path_features[path_idx]
+            channel = self.gru(f.unsqueeze(1), channel.unsqueeze(0))
+            final_channel_feature.append(channel[-1].squeeze(0))
+        return torch.stack(final_channel_feature, dim=1)
 
 class Readout(nn.Module):
-    def __init__(self, hidden_dim=32, output_dim=1):
+    def __init__(self, feature_size=32, k=5, hidden_dim1=8, hidden_dim2=128, out_dim=1):
         super().__init__()
-        self.lstm = nn.LSTM(hidden_dim, hidden_dim, batch_first=True)
-        self.fc = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim)
-        )
-        
+        self.hidden_dim2 = hidden_dim2
+        self.fc1 = nn.Linear(feature_size, hidden_dim1)
+        self.lstm = nn.LSTM(input_size=hidden_dim1, hidden_size=hidden_dim2, num_layers=1, batch_first=True)
+        self.fc2 = nn.Linear(hidden_dim2, out_dim)
+    
     def forward(self, x):
         # x: [B, num_paths, hidden_dim]
-        lstm_out, _ = self.lstm(x)
-        return self.fc(lstm_out[:, -1, :])  # 取最后时间步
+        batch_size = x.shape[0]
+        h0 = torch.zeros(1, batch_size, self.hidden_dim2)
+        c0 = torch.zeros(1, batch_size, self.hidden_dim2)
+        x = F.relu(self.fc1(x))
+        output, (hn, cn) = self.lstm(x, (h0, c0))
+        return self.fc2(hn.squeeze(0))  # (batch, outdim)
 
-class PCNBalanceNet(nn.Module):
-    def __init__(self, 
-               node_embed_dim=16,
-               hidden_dim=32,
-               msg_pass_layers=3):
+class PolicyNet(nn.Module):
+    def __init__(self, config, feature_dim=32):
         super().__init__()
-        
-        # 初始化嵌入
-        self.path_embed = PathEmbedding(node_embed_dim=node_embed_dim, balance_dim=2, hidden_dim=hidden_dim)
-        self.channel_embed = ChannelEmbedding(node_embed_dim=node_embed_dim, balance_dim=2, hidden_dim=hidden_dim)
-        
-        # 消息传递层
-        self.msg_layers = nn.ModuleList([
-            MessagePassingLayer(hidden_dim) 
-            for _ in range(msg_pass_layers)
-        ])
-        
-        # Actor-Critic头
-        self.actor_readout = Readout(hidden_dim, output_dim=2)  # 均值+方差
-        self.critic_readout = Readout(hidden_dim, output_dim=1)
-        
-    def forward(self, batch_data):
-        """
-        输入数据格式:
-        {
-            'path_nodes': [B, P, L],
-            'path_balances': [B, P, L, 2],
-            'channel_nodes': [B, C, 2],
-            'channel_balances': [B, C, 2, 2],
-            'adj_matrix': [B, P, C]
-        }
-        """
-        # 1. 初始化嵌入
-        path_emb = self.path_embed(
-            batch_data['path_nodes'], 
-            batch_data['path_balances']
-        )  # [B, P, L-1, D]
-        
-        channel_emb = self.channel_embed(
-            batch_data['channel_nodes'],
-            batch_data['channel_balances']
-        )  # [B, C, D]
-        
-        # 2. 消息传递
-        # 对path_emb在路径长度维度上取平均，保持三维结构 [B, P, D]
-        path_states = path_emb.mean(dim=2)
-        
-        for layer in self.msg_layers:
-            path_states, channel_emb = layer(
-                path_states,
-                channel_emb,
-                batch_data['adj_matrix']
-            )
-        
-        # 3. Readout
-        mu_logvar = self.actor_readout(path_states)  # [B, P, 2]
-        value = self.critic_readout(path_states)     # [B, 1]
-        
-        # 4. 分解输出
-        mu = mu_logvar[..., 0]  # 均值 [B, P]
-        logvar = mu_logvar[..., 1]  # 方差对数
-        std = torch.exp(0.5*logvar)
-        
-        # 生成分布
-        dist = torch.distributions.Normal(mu, std)
-        return dist, value
 
-def init_weights(m):
-    if isinstance(m, nn.Linear):
-        nn.init.xavier_normal_(m.weight)
-        nn.init.constant_(m.bias, 0.0)
-    elif isinstance(m, nn.GRU):
-        for name, param in m.named_parameters():
-            if 'weight' in name:
-                nn.init.orthogonal_(param)
-            else:
-                nn.init.zeros_(param)
+        self.hidden_dim = 32
+        self.config = config
+        self.iterations = config["model_config"]['iterations']
+        self.path_num = config['path_num']
+        # 均值网络: 输入k*32，输出K维均值
+        self.mean_layer = Readout(k=self.path_num, feature_size=feature_dim, out_dim=self.path_num)
+        # 对数标准差网络: 输入k*32，输出K维log(std)
+        self.log_std_layer = Readout(k=self.path_num, feature_size=feature_dim, out_dim=self.path_num)
+        self.path_init_layer = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.channel_init_layer = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.Gru_Cell1 = GRUCell1()
+        self.Gru_Cell2 = GRUCell2()
+
+    def forward(self, channel_features, path_features):
+        '''
+         输入通道和路径特征，计算均值和标准差 
+         channel_features: (batch, num_channels, 32)
+         path_features: (batch, num_paths, 32)
+         输出: 均值和标准差
+         mean: (batch, K)
+         std: (batch, K)
+         action: (batch, K) 采样得到的action
+         '''
+        channel_features = F.relu(channel_features)
+        path_features = F.relu(path_features)
+
+        for step in range(self.iterations):
+            channel_features = self.Gru_Cell2(path_features, channel_features)
+            path_features = self.Gru_Cell1(path_features, channel_features)
 
 
-batch = {
-    'path_nodes': torch.randint(0, 100, (32, 10, 5)),  # B=32, P=10, L=5
-    'path_balances': torch.randn(32, 10, 5, 2),
-    'channel_nodes': torch.randint(0, 100, (32, 20, 2)),
-    'channel_balances': torch.randn(32, 20, 2, 2),
-    'adj_matrix': (torch.rand(32, 10, 20) > 0.5).float()  # 0-1浮点矩阵
-}
+        # 输入: x形状为 [k, 32]
+        # 计算均值和对数标准差
+        mean = self.mean_layer(path_features)  # [K]
+        log_std = self.log_std_layer(path_features)  # [K]
+        # 约束log_std的范围，防止数值不稳定
+        log_std = torch.clamp(log_std, min=-20, max=2)
+        std = torch.exp(log_std)  # 转换为标准差
+        
+        # 重参数化采样（Reparameterization Trick）
+        noise = torch.randn_like(mean)  # 从标准正态分布采样
+        action = mean + std * noise  # [batch_size, K]
+        action = F.tanh(action)
+        return (mean, std, action)
 
-model = PCNBalanceNet()
-model.apply(init_weights)
-dist, value = model(batch)
+    def caculate(self, states):
+        '''
+        对state对象进行tensor化, 封装forward函数
+        输入是 (batch, state)
+        '''
+        self.states = states
+        self.paths = states[0].paths
+        self.Gru_Cell1.paths = self.paths
+        batch_channel_features = []
+        batch_path_features = []
+        for state in states:
+            self.state = state
+            self.Gru_Cell2.channels = state.channels
+            channel_features = self.channel_init(state.channels)
+            path_features = self.path_init(state.paths)
+            batch_channel_features.append(channel_features)
+            batch_path_features.append(path_features)
+        channel_features = torch.stack(batch_channel_features, dim=0)
+        path_features = torch.stack(batch_path_features, dim=0)
 
-# 采样动作
-actions = dist.rsample()  # [32, 10]
-print(actions)
+        return self.forward(channel_features, path_features)
+        
+
+    def channel_init(self, channels, padding_len=32):
+        # 把每个channel初始化为[其包含的pathid, 0, 0]的状态
+        features = []
+        for channel in channels:
+            features.append([channel.nodeID1, channel.nodeID2, channel.weight1, channel.weight2])
+            features[-1].extend([0]*(padding_len-len(features[-1])))
+        return torch.tensor(features, dtype=torch.float32)
+    
+    def path_init(self, paths, padding_len=32):
+        # 把每个path初始化为[通道id + 双向余额 + 0]的状态
+        features = []
+        for path in paths:
+            path_feature = []
+            for channelID in path.channels:
+                channel = self.state.channels[channelID]
+                path_feature.extend([channel.nodeID1, channel.nodeID2, channel.weight1, channel.weight2])
+            if len(path_feature) > padding_len:
+                raise ValueError("路径长度超过padding_len")
+            path_feature.extend([0]*(padding_len-len(path_feature)))
+            features.append(path_feature)
+        return torch.tensor(features, dtype=torch.float32)
+
+class ValueNet(nn.Module):
+    def __init__(self, config, k=5, feature_dim=32):
+        super().__init__()
+        self.config = config
+        self.value = Readout(k=k, feature_size=feature_dim, out_dim=1)
+
+    def forward(self, x):
+        # 输入: x形状为 [k, 32]
+        value = self.value(x)
+        return value

@@ -1,67 +1,63 @@
-import re
+import copy 
 import torch
-from ..entity import Graph, Channel, Path
-from ..data_processing.data_preprocessing import pross_data
-from model1 import PolicyNet, ValueNet
-import json
+from ultils.entity import State, Channel, Path
+from data_processing.data_preprocessing import pross_data
+from models.model import PolicyNet, ValueNet
 import numpy as np
 import pickle
-
-
-def save(data, path):
-    with open('path', 'wb') as f:
-        pickle.dump(data, f)
-    
-
+import random
 # 定义训练和更新的类
 class DRLPCRTrainer:
-    def __init__(self, initial_state, config):
+    def __init__(self, initial_state, amounts, config):
         self.config = config
+        self.amounts = amounts
         self.state = initial_state
         self.policy_network = PolicyNet(config)
         self.value_network = ValueNet(config)
-        self.simulator = Simulator(initial_state, self.policy_network, self.config)
+        self.simulator = Simulator(self.config, self.amounts)
         self.optimizer = torch.optim.Adam(list(self.policy_network.parameters()) + list(self.value_network.parameters()), lr=self.config['learning_rate'])
         self.eposide_num = 0
+        self.step = 0
+        self.losses = {}
 
     def train_eposide(self):
         """
         进行一次模拟、采样和更新的过程
         """
-        batch_size = config['batch_size']
-        trajectory = self.simulator.generate_trajectory()
-        for step in range(config['buffer_size'] / batch_size):
+        batch_size = self.config['batch_size']
+        trajectory = self.simulator.generate_trajectory(self.state, self.policy_network)
+        for step in range(self.config['buffer_size'] / batch_size):
             batch = trajectory[step * batch_size:(step + 1) * batch_size]  # (batch, T, (state, action, reward))
             self.train_step(batch)
-        self.save_data(self.eposide_num, trajectory)
+        self.save_data(trajectory)
+        self.eposide_num += 1
         
-    def save_data(self, eposide_num, trajectory):
+    def save_data(self, trajectory):
         "保存模型"
-        torch.save(self.policy_network.state_dict(), 'saved_model/ep_{eposide}/policy_network.pth'.format(eposide_num))
-        torch.save(self.value_network.state_dict(), 'saved_model/ep_{}/value_network.pth'.format(eposide_num))
-        with open('data/trajectory/{}.plk'.format(eposide_num), 'wb') as f:
+        torch.save(self.policy_network.state_dict(), 'saved_model/ep_{}/policy_network.pth'.format(self.eposide_num))
+        torch.save(self.value_network.state_dict(), 'saved_model/ep_{}/value_network.pth'.format(self.eposide_num))
+        with open('data/trajectory/{}.plk'.format(self.eposide_num), 'wb') as f:
             pickle.dump(trajectory, f)
                 
         
     def train_step(self, batch_data):
         """
         一次训练步骤，进行梯度更新
+        batch_data: (batch, T, (state, action))
         """
         c1 = self.config['c1']
         c2 = self.config['c2']
         gamma = self.config['gamma']
         epsilon = self.config['epsilon']
-        states = batch_data[:, 0]
-        actions = batch_data[:, 1]
-        rewards = batch_data[:, 2]
-        
-        # 前向传播，计算策略网络的输出
-        policy_outputs = self.policy_network(states)
 
-        actions = []
-        rewards = []
+        states = [[row[0] for row in T] for T in batch_data]
+        actions = [[row[1] for row in T] for T in batch_data]
+        rewards = [[row[0].compute_reward() for row in T] for T in batch_data]
+
+        # 前向传播，计算策略网络的输出
+        policy_outputs = self.policy_network(states)  # (batch, T, (mean, std)) ,(batch, T, action)
         for _ in range(self.config['trigger_threshold']):
-            action = self.policy_network(state)
+            action = self.policy_network(self.state)
             new_state = state.act(action)
             reward = new_state.compute_reward()
             states.append(new_state)
@@ -89,7 +85,9 @@ class DRLPCRTrainer:
         self.optimizer.zero_grad()
         total_loss.backward()
         self.optimizer.step()
-        return state, total_loss
+        self.step += 1
+        print("eposide: {}, step: {}, loss: {}, policy_loss: {}, value_loss: {}, entropy: {}".format(self.eposide_num, self.step, total_loss, policy_loss, value_loss, entropy))
+        self.losses[self.step] = (total_loss, policy_loss, value_loss, entropy)
 
         """
         计算折扣累积奖励
@@ -205,24 +203,29 @@ class DRLPCRTrainer:
         return -total_entropy / (batch_size * steps)
 
 class Simulator:
-    def __init__(self, graph, policy_network, config):
-        self.policy_network = policy_network
-        self.value_network = value_network
+    def __init__(self, config, amounts):
         self.config = config
+        self.amounts = amounts
+        self.transactions_num = 0
+        self.failed_transactions_num = 0
 
-    def generate_trajectory(self):
+    def generate_trajectory(self, state, policy_network):
         "生成交易信息"
+        self.state = state
+        self.policy_network = policy_network
         trajectory = []
+        while len(trajectory) < self.config['buffer_size']:
+            t = 0
+            while t < self.config['trigger_threshold']:
+                amount = random.choice(self.amounts)
+                if not self.state.random_transaction(amount):
+                    t += 1   
+                    self.failed_transactions_num += 1
+                self.transactions_num += 1
+                if self.transactions_num % 1000 == 0:
+                    print("transactions_num: {}, failed_transactions_num: {}, failed rate:{}".format(self.transactions_num, self.failed_transactions_num, self.failed_transactions_num / self.transactions_num ))
+            action = self.policy_network.caculate([self.state])
+            trajectory.append((copy.copy(self.state), action))
+            self.state.act(action[2][0])
         return trajectory
-# 以下是使用示例
-if __name__ == "__main__":
-    config = json.load(open('config/DPLPCR.json'))
-    initial_state = pross_data()
-    trainer = DRLPCRTrainer(initial_state, config)
-
-    for eposide in range(config['num_episodes']):
-        trainer.train_eposide()
-        trainer.save_model()
-    
-
     
