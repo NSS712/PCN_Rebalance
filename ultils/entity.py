@@ -154,3 +154,4 @@ class State:
             assert -1 <= amount_ratio <= 1, "amount_ratio 不在[-1, 1]之间" 
             amount = int(path.min_capacity(1 if amount_ratio >= 0 else -1, self.channels) * amount_ratio)
             path.transaction(amount, self.channels)
+        return self

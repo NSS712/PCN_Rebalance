@@ -1,10 +1,12 @@
 from os import path
+import re
 from typing import final
 from networkx import find_asteroidal_triple
 from pylab import f
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import copy
 
 class GRUCell1(nn.Module):
     "最初输入为path的初始化的特征，然后每轮输入的是channel特征，输出新的path特征"
@@ -70,6 +72,37 @@ class Readout(nn.Module):
         output, (hn, cn) = self.lstm(x, (h0, c0))
         return self.fc2(hn.squeeze(0))  # (batch, outdim)
 
+class EmbeddingNet(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.hidden_dim = config["model_config"]['hidden_dim']
+        self.feature_dim = config["model_config"]['hidden_dim']
+        self.iterations = config["model_config"]['iterations']
+        self.path_num = config['path_num']
+        self.path_init_layer = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.channel_init_layer = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.Gru_Cell1 = GRUCell1()
+        self.Gru_Cell2 = GRUCell2()
+
+    def forward(self, channel_features, path_features):
+        '''
+         输入通道和路径特征，计算均值和标准差 
+         channel_features: (batch, num_channels, 32)
+         path_features: (batch, num_paths, 32)
+         输出: 均值和标准差
+         mean: (batch, K)
+         std: (batch, K)
+         action: (batch, K) 采样得到的action
+         '''
+        channel_features = F.relu(channel_features)
+        path_features = F.relu(path_features)
+
+        for step in range(self.iterations):
+            channel_features = self.Gru_Cell2(path_features, channel_features)
+            path_features = self.Gru_Cell1(path_features, channel_features)
+
+
 class PolicyNet(nn.Module):
     def __init__(self, config, feature_dim=32):
         super().__init__()
@@ -86,6 +119,7 @@ class PolicyNet(nn.Module):
         self.channel_init_layer = nn.Linear(self.hidden_dim, self.hidden_dim)
         self.Gru_Cell1 = GRUCell1()
         self.Gru_Cell2 = GRUCell2()
+
 
     def forward(self, channel_features, path_features):
         '''
@@ -114,15 +148,16 @@ class PolicyNet(nn.Module):
         std = torch.exp(log_std)  # 转换为标准差
         
         # 重参数化采样（Reparameterization Trick）
-        noise = torch.randn_like(mean)  # 从标准正态分布采样
-        action = mean + std * noise  # [batch_size, K]
-        action = F.tanh(action)
-        return (mean, std, action)
+        noise = torch.randn_like(mean)  # 从标准正态分布采样  [batch_size, p]
+        action = mean + std * noise  # [batch_size, p]
+        action = F.tanh(action)  
+        return torch.stack([mean, std, action], dim=1)  # (batch, 3, p)
 
     def caculate(self, states):
         '''
         对state对象进行tensor化, 封装forward函数
-        输入是 (batch, state)
+        输入是 (batch, 1) 的 states
+        输出是 (batch, 3, p), p是path的个数, 3是 mean, std, action
         '''
         self.states = states
         self.paths = states[0].paths
@@ -136,12 +171,43 @@ class PolicyNet(nn.Module):
             path_features = self.path_init(state.paths)
             batch_channel_features.append(channel_features)
             batch_path_features.append(path_features)
-        channel_features = torch.stack(batch_channel_features, dim=0)
-        path_features = torch.stack(batch_path_features, dim=0)
-
-        return self.forward(channel_features, path_features)
+        channel_features = torch.stack(batch_channel_features, dim=0)  # (batch, num_channels, 32)
+        path_features = torch.stack(batch_path_features, dim=0)  # (batch, num_paths, 32)   
+        return self.forward(channel_features, path_features)    # (batch, 3, p)
         
+    def caculate_T_steps(self, states):
+        '''
+        计算T步policy
+        输入states的list (batch, 1) 的 states
+        输出 batch_size * (T+1) 个state
+        以及 (batch, T, 3, p), p是path的个数, 3是 mean, std, action
+        以及 batch_size * T 个reward
+        
+        '''
+        rewards = []
+        policy = []
+        re_states = [states]
+        for t in range(self.config['trigger_threshold']):
+            new_states = []
+            tep_rewards = []
+            policy_outputs = self.caculate(states)  # (batch, 3, p)
+            policy.append(policy_outputs)
+            for idx, state in enumerate(states):
+                new_state = copy.copy(state).act(policy_outputs[idx][2])
+                tep_rewards.append(new_state.compute_reward())
+                new_states.append(new_state)
+            re_states.append(new_states)
+            rewards.append(tep_rewards)
+            states = new_states
+        
+        # policy 变成 （t, batch, 3, p）
+        # rewards 变成 （t, batch）
+        # re_states 变成 （t+1, batch）
 
+        policy = torch.stack(policy, dim=1) # (batch, t, 3, p)
+        rewards = torch.tensor(rewards, dtype=torch.float32).transpose(0,1) # (batch, t)
+        return re_states, policy, rewards
+    
     def channel_init(self, channels, padding_len=32):
         # 把每个channel初始化为[其包含的pathid, 0, 0]的状态
         features = []
@@ -167,6 +233,8 @@ class PolicyNet(nn.Module):
             path_feature.extend([0]*(padding_len-len(path_feature)))
             features.append(path_feature)
         return torch.tensor(features, dtype=torch.float32)
+
+    def value(self):
 
 class ValueNet(nn.Module):
     def __init__(self, config, k=5, feature_dim=32):

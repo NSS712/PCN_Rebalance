@@ -26,8 +26,8 @@ class DRLPCRTrainer:
         """
         batch_size = self.config['batch_size']
         trajectory = self.simulator.generate_trajectory(self.state, self.policy_network)
-        for step in range(self.config['buffer_size'] / batch_size):
-            batch = trajectory[step * batch_size:(step + 1) * batch_size]  # (batch, T, (state, action, reward))
+        for step in range(self.config['buffer_size'] // batch_size):
+            batch = {'states': trajectory['states'][step*batch_size:(step+1)*batch_size], 'actions': trajectory['actions'][step*batch_size:(step+1)*batch_size], 'rewards': trajectory['rewards'][step*batch_size:(step+1)*batch_size]}
             self.train_step(batch)
         self.save_data(trajectory)
         self.eposide_num += 1
@@ -43,21 +43,24 @@ class DRLPCRTrainer:
     def train_step(self, batch_data):
         """
         一次训练步骤，进行梯度更新
-        batch_data: (batch, T, (state, action))
+        batch_data['states'] # (batch, t)
+        batch_data['actions'] # (batch, T, 3, P)
+        batch_data['rewards'] # (batch, T)
         """
         c1 = self.config['c1']
         c2 = self.config['c2']
         gamma = self.config['gamma']
         epsilon = self.config['epsilon']
 
-        states = [[row[0] for row in T] for T in batch_data]
-        actions = [[row[1] for row in T] for T in batch_data]
-        rewards = [[row[0].compute_reward() for row in T] for T in batch_data]
+        states = batch_data['states'] # (batch, t)
+        actions = batch_data['actions'] # (batch, T, 3, P)
+        rewards = batch_data['rewards'] # (batch, T)
 
         # 前向传播，计算策略网络的输出
-        policy_outputs = self.policy_network(states)  # (batch, T, (mean, std)) ,(batch, T, action)
+        policy_outputs = self.policy_network.caculate(states)  # (batch, (mean, std, action))
         for _ in range(self.config['trigger_threshold']):
-            action = self.policy_network(self.state)
+            action = self.policy_network.caculate(self.state)
+
             new_state = state.act(action)
             reward = new_state.compute_reward()
             states.append(new_state)
@@ -171,7 +174,7 @@ class DRLPCRTrainer:
 
         return advantages
 
-    def calculate_value_loss(self, value_outputs, rewards, gamma):
+    def calculate_value_loss(self, value_outputs, rewards):
         """
         计算价值损失
         :param value_outputs: 价值网络的输出（状态的价值估计）, (batch, T, 1)
@@ -179,6 +182,7 @@ class DRLPCRTrainer:
         :param gamma: 折扣因子
         :return: 价值损失
         """
+        gamma = self.config['gamma']
         batch_size, T, _ = rewards.shape
         discounted = torch.zeros_like(rewards)
         for b in range(batch_size):
@@ -213,7 +217,7 @@ class Simulator:
         "生成交易信息"
         self.state = state
         self.policy_network = policy_network
-        trajectory = []
+        trajectory = {'states': [], 'actions': [], 'rewards': []}
         while len(trajectory) < self.config['buffer_size']:
             t = 0
             while t < self.config['trigger_threshold']:
@@ -223,9 +227,11 @@ class Simulator:
                     self.failed_transactions_num += 1
                 self.transactions_num += 1
                 if self.transactions_num % 1000 == 0:
-                    print("transactions_num: {}, failed_transactions_num: {}, failed rate:{}".format(self.transactions_num, self.failed_transactions_num, self.failed_transactions_num / self.transactions_num ))
-            action = self.policy_network.caculate([self.state])
-            trajectory.append((copy.copy(self.state), action))
-            self.state.act(action[2][0])
+                    print("transactions_num: {}, failed_transactions_num: {}, failed rate:{:.2f}".format(self.transactions_num, self.failed_transactions_num, self.failed_transactions_num / self.transactions_num ))
+            states, actions, rewards = self.policy_network.caculate_T_steps([self.state])
+            trajectory['states'].extend(states[:-1])
+            trajectory['actions'].extend(actions)
+            trajectory['rewards'].extend(rewards)
+            self.state = copy.copy(states[-1])
         return trajectory
     
