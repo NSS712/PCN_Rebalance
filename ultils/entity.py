@@ -15,17 +15,20 @@ class Path:
     def __init__(self, ID):
         self.ID = ID
         self.channels = []
+        self.channel_derection = []
         self.nodes = []
+
     def min_capacity(self, direction, channels):
         '''
         根据direction, 找到path中最大交易额度。
         direction: 1表示交易方向为source->destination, 
                    0表示交易方向为destination->source
         '''
-        ans = 1e10
-        for channel_id in self.channels:
+        ans = float('inf')
+        for idx, channel_id in enumerate(self.channels):
             channel = channels[channel_id]
-            if direction:
+            d = self.channel_derection[idx]
+            if direction * d == 1:
                 ans = min(ans, channel.weight1)
             else:
                 ans = min(ans, channel.weight2)
@@ -35,10 +38,15 @@ class Path:
         '''
         根据amounts, 对每个channel执行交易。
         '''
-        for channel_id in self.channels:
+        for idx, channel_id in enumerate(self.channels):
             channel = channels[channel_id]
-            channel.weight1 -= amount
-            channel.weight2 += amount
+            d = self.channel_derection[idx]
+            if d == 1:
+                channel.weight1 -= amount
+                channel.weight2 += amount
+            else:
+                channel.weight1 += amount
+                channel.weight2 -= amount
             if channel.weight1 < 0 or channel.weight2 < 0:
                 raise ValueError("余额不足，交易失败")
 
@@ -144,6 +152,5 @@ class State:
         for i, path in enumerate(self.paths):
             amount_ratio = amount_ratios[i].item()
             assert -1 <= amount_ratio <= 1, "amount_ratio 不在[-1, 1]之间" 
-            amount = int(path.min_capacity(amount_ratio >= 0, self.channels) * amount_ratio)
-            
+            amount = int(path.min_capacity(1 if amount_ratio >= 0 else -1, self.channels) * amount_ratio)
             path.transaction(amount, self.channels)

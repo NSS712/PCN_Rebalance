@@ -296,10 +296,12 @@ def pross_data():
             key = (nodeID_to_index[raw_channel[0]], nodeID_to_index[raw_channel[1]])
             if key in channel_to_index:
                 path.channels.append(channel_to_index[key])
+                path.channel_derection.append(1)
                 channels[channel_to_index[key]].path.append(pathID)
             else:
                 key = (nodeID_to_index[raw_channel[1]], nodeID_to_index[raw_channel[0]])
                 path.channels.append(channel_to_index[key])
+                path.channel_derection.append(-1)
                 channels[channel_to_index[key]].path.append(pathID)
         for node in raw_path['path']:
             path.nodes.append(nodeID_to_index[node])

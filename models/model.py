@@ -155,9 +155,13 @@ class PolicyNet(nn.Module):
         features = []
         for path in paths:
             path_feature = []
-            for channelID in path.channels:
+            for idx, channelID in enumerate(path.channels):
                 channel = self.state.channels[channelID]
-                path_feature.extend([channel.nodeID1, channel.nodeID2, channel.weight1, channel.weight2])
+                d = path.channel_derection[idx]
+                if d == 1:
+                    path_feature.extend([channel.nodeID1, channel.nodeID2, channel.weight1, channel.weight2])
+                else:
+                    path_feature.extend([channel.nodeID2, channel.nodeID1, channel.weight2, channel.weight1])
             if len(path_feature) > padding_len:
                 raise ValueError("路径长度超过padding_len")
             path_feature.extend([0]*(padding_len-len(path_feature)))
