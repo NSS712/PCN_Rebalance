@@ -10,10 +10,10 @@ import copy
 
 class GRUCell1(nn.Module):
     "最初输入为path的初始化的特征，然后每轮输入的是channel特征，输出新的path特征"
-    def __init__(self, feature_size=32):
+    def __init__(self, paths,feature_size=32):
         super().__init__()
         self.gru = nn.GRU(input_size=feature_size, hidden_size=feature_size, num_layers=1, batch_first=True)
-        self.paths = []
+        self.paths = paths
 
     def forward(self, path_features, channel_features):
         '''
@@ -37,10 +37,10 @@ class GRUCell1(nn.Module):
 
 class GRUCell2(nn.Module):
     '''输入channel的旧的特征，用每个channel包含的path的特征来更新channel特征'''
-    def __init__(self, feature_size=32):
+    def __init__(self, channels, feature_size=32):
         super().__init__()
         self.gru = nn.GRU(input_size=feature_size, hidden_size=feature_size, num_layers=1, batch_first=True)
-        self.channels = []
+        self.channels = channels
     
     def forward(self, path_features, channel_features):
 
@@ -73,17 +73,16 @@ class Readout(nn.Module):
         return self.fc2(hn.squeeze(0))  # (batch, outdim)
 
 class EmbeddingNet(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, state):
         super().__init__()
         self.config = config
         self.hidden_dim = config["model_config"]['hidden_dim']
         self.feature_dim = config["model_config"]['hidden_dim']
         self.iterations = config["model_config"]['iterations']
         self.path_num = config['path_num']
-        self.path_init_layer = nn.Linear(self.hidden_dim, self.hidden_dim)
-        self.channel_init_layer = nn.Linear(self.hidden_dim, self.hidden_dim)
-        self.Gru_Cell1 = GRUCell1()
-        self.Gru_Cell2 = GRUCell2()
+        self.Gru_Cell1 = GRUCell1(state.paths)
+        self.Gru_Cell2 = GRUCell2(state.channels)
+
 
     def forward(self, channel_features, path_features):
         '''
@@ -97,14 +96,14 @@ class EmbeddingNet(nn.Module):
          '''
         channel_features = F.relu(channel_features)
         path_features = F.relu(path_features)
-
         for step in range(self.iterations):
             channel_features = self.Gru_Cell2(path_features, channel_features)
             path_features = self.Gru_Cell1(path_features, channel_features)
+        return channel_features, path_features
 
 
 class PolicyNet(nn.Module):
-    def __init__(self, config, feature_dim=32):
+    def __init__(self, config, embedding_net, feature_dim=32):
         super().__init__()
 
         self.hidden_dim = 32
@@ -115,10 +114,7 @@ class PolicyNet(nn.Module):
         self.mean_layer = Readout(k=self.path_num, feature_size=feature_dim, out_dim=self.path_num)
         # 对数标准差网络: 输入k*32，输出K维log(std)
         self.log_std_layer = Readout(k=self.path_num, feature_size=feature_dim, out_dim=self.path_num)
-        self.path_init_layer = nn.Linear(self.hidden_dim, self.hidden_dim)
-        self.channel_init_layer = nn.Linear(self.hidden_dim, self.hidden_dim)
-        self.Gru_Cell1 = GRUCell1()
-        self.Gru_Cell2 = GRUCell2()
+        self.embedding_net = embedding_net
 
 
     def forward(self, channel_features, path_features):
@@ -131,13 +127,7 @@ class PolicyNet(nn.Module):
          std: (batch, K)
          action: (batch, K) 采样得到的action
          '''
-        channel_features = F.relu(channel_features)
-        path_features = F.relu(path_features)
-
-        for step in range(self.iterations):
-            channel_features = self.Gru_Cell2(path_features, channel_features)
-            path_features = self.Gru_Cell1(path_features, channel_features)
-
+        channel_features, path_features = self.embedding_net(channel_features, path_features)
 
         # 输入: x形状为 [k, 32]
         # 计算均值和对数标准差
@@ -161,14 +151,10 @@ class PolicyNet(nn.Module):
         '''
         self.states = states
         self.paths = states[0].paths
-        self.Gru_Cell1.paths = self.paths
         batch_channel_features = []
         batch_path_features = []
         for state in states:
-            self.state = state
-            self.Gru_Cell2.channels = state.channels
-            channel_features = self.channel_init(state.channels)
-            path_features = self.path_init(state.paths)
+            channel_features, path_features = state.to_tensor(self.config['model_config']['feature_dim'])
             batch_channel_features.append(channel_features)
             batch_path_features.append(path_features)
         channel_features = torch.stack(batch_channel_features, dim=0)  # (batch, num_channels, 32)
@@ -179,10 +165,9 @@ class PolicyNet(nn.Module):
         '''
         计算T步policy
         输入states的list (batch, 1) 的 states
-        输出 batch_size * (T+1) 个state
+        输出 batch_size , (T+1) 个state
         以及 (batch, T, 3, p), p是path的个数, 3是 mean, std, action
         以及 batch_size * T 个reward
-        
         '''
         rewards = []
         policy = []
@@ -194,55 +179,50 @@ class PolicyNet(nn.Module):
             policy.append(policy_outputs)
             for idx, state in enumerate(states):
                 new_state = copy.copy(state).act(policy_outputs[idx][2])
-                tep_rewards.append(new_state.compute_reward())
+                tep_rewards.append(new_state.compute_reward() - state.compute_reward())
                 new_states.append(new_state)
             re_states.append(new_states)
             rewards.append(tep_rewards)
             states = new_states
         
-        # policy 变成 （t, batch, 3, p）
-        # rewards 变成 （t, batch）
-        # re_states 变成 （t+1, batch）
-
+        re_states = list(map(list, zip(*re_states))) # (batch, t+1)
         policy = torch.stack(policy, dim=1) # (batch, t, 3, p)
         rewards = torch.tensor(rewards, dtype=torch.float32).transpose(0,1) # (batch, t)
         return re_states, policy, rewards
-    
-    def channel_init(self, channels, padding_len=32):
-        # 把每个channel初始化为[其包含的pathid, 0, 0]的状态
-        features = []
-        for channel in channels:
-            features.append([channel.nodeID1, channel.nodeID2, channel.weight1, channel.weight2])
-            features[-1].extend([0]*(padding_len-len(features[-1])))
-        return torch.tensor(features, dtype=torch.float32)
-    
-    def path_init(self, paths, padding_len=32):
-        # 把每个path初始化为[通道id + 双向余额 + 0]的状态
-        features = []
-        for path in paths:
-            path_feature = []
-            for idx, channelID in enumerate(path.channels):
-                channel = self.state.channels[channelID]
-                d = path.channel_derection[idx]
-                if d == 1:
-                    path_feature.extend([channel.nodeID1, channel.nodeID2, channel.weight1, channel.weight2])
-                else:
-                    path_feature.extend([channel.nodeID2, channel.nodeID1, channel.weight2, channel.weight1])
-            if len(path_feature) > padding_len:
-                raise ValueError("路径长度超过padding_len")
-            path_feature.extend([0]*(padding_len-len(path_feature)))
-            features.append(path_feature)
-        return torch.tensor(features, dtype=torch.float32)
-
-    def value(self):
 
 class ValueNet(nn.Module):
-    def __init__(self, config, k=5, feature_dim=32):
+    def __init__(self, config, embedding_net, k=5, feature_dim=32, ):
         super().__init__()
         self.config = config
+        self.embedding_net = embedding_net
         self.value = Readout(k=k, feature_size=feature_dim, out_dim=1)
 
-    def forward(self, x):
-        # 输入: x形状为 [k, 32]
-        value = self.value(x)
+    def forward(self, channel_features, path_features):
+        channel_features, path_features = self.embedding_net(channel_features, path_features)
+        value = self.value(path_features)
         return value
+    
+    def caculate(self, states):
+        '''
+        对state对象进行tensor化, 封装forward函数
+        输入是 (batch, 1) 的 states
+        输出是 (batch, 1)
+        '''
+
+        '''
+        对state对象进行tensor化, 封装forward函数
+        输入是 (batch, 1) 的 states
+        输出是 (batch, 3, p), p是path的个数, 3是 mean, std, action
+        '''
+        self.states = states
+        self.paths = states[0].paths
+        self.Gru_Cell1.paths = self.paths
+        batch_channel_features = []
+        batch_path_features = []
+        for state in states:
+            channel_features, path_features = state.to_tensor(self.config['feature_dim'])
+            batch_channel_features.append(channel_features)
+            batch_path_features.append(path_features)
+        channel_features = torch.stack(batch_channel_features, dim=0)  # (batch, num_channels, 32)
+        path_features = torch.stack(batch_path_features, dim=0)  # (batch, num_paths, 32)   
+        return self.forward(channel_features, path_features)    # (batch, 3, 1)

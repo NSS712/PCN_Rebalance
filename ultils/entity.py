@@ -1,6 +1,8 @@
 import random
 from re import T
 import numpy as np
+import torch
+from torch.nn.modules import padding
 
 class Channel:
     def __init__(self, ID, nodeID1, nodeID2, weight1, weight2):
@@ -139,8 +141,10 @@ class State:
             channel = self.channels[channel_id]
             if direction == 1:
                 channel.weight1 -= amount
+                channel.weight2 += amount
             else:
                 channel.weight2 -= amount
+                channel.weight1 += amount
         return True
 
     def act(self, amount_ratios):
@@ -155,3 +159,32 @@ class State:
             amount = int(path.min_capacity(1 if amount_ratio >= 0 else -1, self.channels) * amount_ratio)
             path.transaction(amount, self.channels)
         return self
+
+    def to_tensor(self, feature_dim):
+        '''
+        将state转换为tensor, 用于神经网络的输入。
+        '''
+
+        # 把每个channel初始化为[其包含的pathid, 0, 0]的状态
+        padding_len = feature_dim
+        channel_features = []
+        for channel in self.channels:
+            channel_features.append([channel.nodeID1, channel.nodeID2, channel.weight1, channel.weight2])
+            channel_features[-1].extend([0]*(padding_len-4))
+
+        # 把每个path初始化为[通道id + 双向余额 + 0]的状态
+        path_features = []
+        for path in self.paths:
+            path_feature = []
+            for idx, channelID in enumerate(path.channels):
+                channel = self.channels[channelID]
+                d = path.channel_derection[idx]
+                if d == 1:
+                    path_feature.extend([channel.nodeID1, channel.nodeID2, channel.weight1, channel.weight2])
+                else:
+                    path_feature.extend([channel.nodeID2, channel.nodeID1, channel.weight2, channel.weight1])
+            if len(path_feature) > padding_len :
+                raise ValueError("路径长度超过padding_len")
+            path_feature.extend([0]*(padding_len-len(path_feature)))
+            path_features.append(path_feature)
+        return torch.tensor(channel_features, dtype=torch.float32), torch.tensor(path_features, dtype=torch.float32)
