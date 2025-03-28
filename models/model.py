@@ -149,8 +149,6 @@ class PolicyNet(nn.Module):
         输入是 (batch, 1) 的 states
         输出是 (batch, 3, p), p是path的个数, 3是 mean, std, action
         '''
-        self.states = states
-        self.paths = states[0].paths
         batch_channel_features = []
         batch_path_features = []
         for state in states:
@@ -214,13 +212,10 @@ class ValueNet(nn.Module):
         输入是 (batch, 1) 的 states
         输出是 (batch, 3, p), p是path的个数, 3是 mean, std, action
         '''
-        self.states = states
-        self.paths = states[0].paths
-        self.Gru_Cell1.paths = self.paths
         batch_channel_features = []
         batch_path_features = []
         for state in states:
-            channel_features, path_features = state.to_tensor(self.config['feature_dim'])
+            channel_features, path_features = state.to_tensor(self.config["model_config"]['feature_dim'])
             batch_channel_features.append(channel_features)
             batch_path_features.append(path_features)
         channel_features = torch.stack(batch_channel_features, dim=0)  # (batch, num_channels, 32)

@@ -187,4 +187,4 @@ class State:
                 raise ValueError("路径长度超过padding_len")
             path_feature.extend([0]*(padding_len-len(path_feature)))
             path_features.append(path_feature)
-        return torch.tensor(channel_features, dtype=torch.float32), torch.tensor(path_features, dtype=torch.float32)
+        return torch.tensor(channel_features, dtype=torch.float32, device="cuda"), torch.tensor(path_features, dtype=torch.float32, device="cuda")

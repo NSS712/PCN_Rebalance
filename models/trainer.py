@@ -7,6 +7,9 @@ from models.model import PolicyNet, ValueNet, EmbeddingNet
 import numpy as np
 import pickle
 import random
+
+torch.autograd.set_detect_anomaly(True)
+
 # 定义训练和更新的类
 class DRLPCRTrainer:
     def __init__(self, initial_state, amounts, config):
@@ -21,6 +24,9 @@ class DRLPCRTrainer:
         self.eposide_num = 0
         self.step = 0
         self.losses = {}
+
+        self.policy_network.to("cuda")
+        self.value_network.to("cuda")
 
     def train_eposide(self):
         """
@@ -57,8 +63,10 @@ class DRLPCRTrainer:
         states = batch_data['states'] # (batch, t)
         behavior_outputs = batch_data['actions'] # (batch, T, 3, P)
         behavior_rewards = batch_data['rewards'] # (batch, T)
+        behavior_rewards = torch.stack(behavior_rewards, dim=0) # (batch, T)
+        behavior_outputs = torch.stack(behavior_outputs, dim=0) # (batch, T, 3, P)
+        # 把states的二维list变成（t,batch）        
 
-        # 把states的二维list变成（t,batch）
         states = list(map(list, zip(*states))) # (t, batch)
         policy_outputs = []
         behavior_values = []
@@ -67,8 +75,8 @@ class DRLPCRTrainer:
             policy_outputs.append(policy_step_outputs)
             behavior_step_values = self.value_network.caculate(t_batch)  # (batch, 1)
             behavior_values.append(behavior_step_values)
-
-        behavior_values = torch.stack(behavior_values, dim=1) # (batch, t)
+        policy_outputs = torch.stack(policy_outputs, dim=1) # (batch, t, 3, p)
+        behavior_values = torch.stack(behavior_values, dim=1).squeeze(-1) # (batch, t)
         # 计算策略损失、价值损失和熵项
         policy_loss = self.calculate_policy_loss(policy_outputs, behavior_outputs, behavior_rewards, behavior_values)
         value_loss = self.calculate_value_loss(behavior_values, behavior_rewards)
@@ -81,14 +89,14 @@ class DRLPCRTrainer:
         total_loss.backward()
         self.optimizer.step()
         self.step += 1
-        print("eposide: {}, step: {}, loss: {}, policy_loss: {}, value_loss: {}, entropy: {}".format(self.eposide_num, self.step, total_loss, policy_loss, value_loss, entropy))
+        print("eposide: {}, step: {}, loss: {:.4f}, policy_loss: {:.4f}, value_loss: {:.4f}, entropy: {:.4f}".format(self.eposide_num, self.step, total_loss, policy_loss, value_loss, entropy))
         self.losses[self.step] = (total_loss, policy_loss, value_loss, entropy)
 
     def calculate_policy_loss(self, policy_outputs, behavior_outputs, behavior_rewards, behavior_values):
         """
         policy_outputs, value_outputs, actions_all, rewards
         计算策略损失
-        :param policy_outputs: 策略网络的输出（动作的概率分布）
+        :param policy_outputs: 策略网络的输出（动作的概率分布） (batch, t, 3, p)
         :param actions: 实际采取的动作
         :param discounted_rewards: 折扣累积奖励
         :param value_estimates: 价值网络的输出（状态的价值估计）
@@ -98,12 +106,27 @@ class DRLPCRTrainer:
         J = self.config['J']
         epsilon = self.config['epsilon']  #剪辑操作的参数
 
-        policy_mean, policy_std, policy_action = policy_outputs
-        behavior_mean, behavior_std, behavior_action = behavior_outputs
+        policy_mean, policy_std, policy_action = policy_outputs[:, :, 0, :], policy_outputs[:, :, 1, :], policy_outputs[:, :, 2, :]
+        behavior_mean, behavior_std, behavior_action = behavior_outputs[:, :, 0, :], behavior_outputs[:, :, 1, :], behavior_outputs[:, :, 2, :]
+
+        # policy_mean.squeeze_(dim=2)
+        # policy_std.squeeze_(dim=2)
+        # policy_action.squeeze_(dim=2)
+        # behavior_mean.squeeze_(dim=2)
+        # behavior_std.squeeze_(dim=2)
+        # behavior_action.squeeze_(dim=2)
+
+        policy_mean = policy_mean.squeeze(dim=2)
+        policy_std = policy_std.squeeze(dim=2)
+        policy_action = policy_action.squeeze(dim=2)
+        behavior_mean = behavior_mean.squeeze(dim=2)
+        behavior_std = behavior_std.squeeze(dim=2)
+        behavior_action = behavior_action.squeeze(dim=2)
+
         # 计算概率比
         ratio = self.calculate_probability_ratio(policy_mean, policy_std, behavior_mean, behavior_std, behavior_action)
         # 计算优势函数
-        advantage = self.calculate_advantage(behavior_rewards, behavior_values)
+        advantage = self.calculate_advantage(behavior_rewards, behavior_values).unsqueeze(-1)
         L_cpi = ratio * advantage
         L_clip = torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantage
         policy_loss = -torch.mean(torch.min(L_cpi, L_clip))
@@ -120,10 +143,18 @@ class DRLPCRTrainer:
         :return: 概率比
         """
         # 计算当前策略网络的概率密度
-        prob_theta = (1 / (np.sqrt(2 * np.pi) * std_theta)) * np.exp(-((action - mean_theta) ** 2) / (2 * std_theta ** 2))
+        #prob_theta = (1 / (np.sqrt(2 * np.pi) * std_theta)) * np.exp(-((action - mean_theta) ** 2) / (2 * std_theta ** 2))
         # 计算行为策略网络的概率密度
-        prob_behavior = (1 / (np.sqrt(2 * np.pi) * std_behavior)) * np.exp(-((action - mean_behavior) ** 2) / (2 * std_behavior ** 2))
+        #prob_behavior = (1 / (np.sqrt(2 * np.pi) * std_behavior)) * np.exp(-((action - mean_behavior) ** 2) / (2 * std_behavior ** 2))
         # 计算概率比
+
+        # 计算目标策略网络的概率密度
+        prob_theta = (1 / (torch.sqrt(2 * torch.tensor(torch.pi)) * std_theta)) * torch.exp(-((action - mean_theta) ** 2) / (2 * std_theta ** 2))
+
+        # 计算行为策略网络的概率密度
+        prob_behavior = (1 / (torch.sqrt(2 * torch.tensor(torch.pi)) * std_behavior)) * torch.exp(-((action - mean_behavior) ** 2) / (2 * std_behavior ** 2))
+
+
         ratio = prob_theta / prob_behavior
         return ratio
 
@@ -166,7 +197,7 @@ class DRLPCRTrainer:
                 running_add = running_add * gamma + rewards[b, t]
                 discounted[b, t] = running_add
         
-        value_loss = torch.mean(torch.sum((discounted - value_outputs) ** 2), dim=(1,2))
+        value_loss = torch.mean(torch.sum((discounted - value_outputs) ** 2, dim=1))
         return value_loss
 
     def calculate_policy_entropy(self, policy_outputs):
@@ -177,8 +208,8 @@ class DRLPCRTrainer:
         """
         batch_size, steps, _ , p= policy_outputs.shape
         stds = policy_outputs[:, :, 1, :]  # 提取标准差
-        entropy_per_step = 0.5 * np.log(2 * np.pi * np.e * stds ** 2)
-        total_entropy = np.sum(entropy_per_step)
+        entropy_per_step = 0.5 * torch.log(2 * torch.pi * torch.e * stds ** 2)
+        total_entropy = torch.sum(entropy_per_step)
         return -total_entropy / (batch_size * steps * p)
 
 class Simulator:
@@ -190,22 +221,23 @@ class Simulator:
 
     def generate_trajectory(self, state, policy_network):
         "生成交易信息"
-        self.state = state
-        self.policy_network = policy_network
-        trajectory = {'states': [], 'actions': [], 'rewards': []}
-        while len(trajectory) < self.config['buffer_size']:
-            t = 0
-            while t < self.config['trigger_threshold']:
-                amount = random.choice(self.amounts)
-                if not self.state.random_transaction(amount):
-                    t += 1   
-                    self.failed_transactions_num += 1
-                self.transactions_num += 1
-                if self.transactions_num % 1000 == 0:
-                    print("transactions_num: {}, failed_transactions_num: {}, failed rate:{:.2f}".format(self.transactions_num, self.failed_transactions_num, self.failed_transactions_num / self.transactions_num ))
-            states, actions, rewards = self.policy_network.caculate_T_steps([self.state])
-            trajectory['states'].extend(states[0][:-1])
-            trajectory['actions'].extend(actions)
-            trajectory['rewards'].extend(rewards)
-            self.state = states[0][-1]
+        with torch.no_grad():
+            self.state = state
+            self.policy_network = policy_network
+            trajectory = {'states': [], 'actions': [], 'rewards': []}
+            while len(trajectory["states"]) < self.config['buffer_size']:
+                t = 0
+                while t < self.config['trigger_threshold']:
+                    amount = random.choice(self.amounts)
+                    if not self.state.random_transaction(amount):
+                        t += 1   
+                        self.failed_transactions_num += 1
+                    self.transactions_num += 1
+                    if self.transactions_num % 1000 == 0:
+                        print("transactions_num: {}, failed_transactions_num: {}, failed rate:{:.2f}".format(self.transactions_num, self.failed_transactions_num, self.failed_transactions_num / self.transactions_num ))
+                states, actions, rewards = self.policy_network.caculate_T_steps([self.state])
+                trajectory['states'].append(states[0][:-1])
+                trajectory['actions'].extend(actions)
+                trajectory['rewards'].extend(rewards)
+                self.state = states[0][-1]
         return trajectory

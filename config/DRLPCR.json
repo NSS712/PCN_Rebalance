@@ -1,8 +1,8 @@
 {
     "eposide_num": 100,
-    "batch_size": 16,
-    "buffer_size": 256,
-    "trigger_threshold": 25,
+    "batch_size": 4,
+    "buffer_size": 64,
+    "trigger_threshold": 8,
     "path_num": 5,
     "padding_len":32,
     "path_max_len": 6,
