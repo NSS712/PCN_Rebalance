@@ -258,6 +258,7 @@ def generate_candidate_paths(G, num_paths=10, weight_increment=10, edge_coverage
 
 def pross_data():
     # 设置文件路径
+    config = json.load(open("config/DRLPCR.json", "r"))
     base_dir = "d:/Doc/毕设/code/data/raw"
     nodes_file = os.path.join(base_dir, "allnodes.txt")
     channels_file = os.path.join(base_dir, "channels.txt")
@@ -270,10 +271,12 @@ def pross_data():
     
     # 创建图,只保留最大连通分量
     G = create_graph(nodes, channels)
-    G_sub = sample_graph(G, 50)
+    G_sub = sample_graph(G, config["sample_node_num"])
     # visualize_graph(G_sub)
     # 生成循环路径
-    row_paths = generate_candidate_paths(G_sub, num_paths=2, weight_increment=10, edge_coverage_threshold=1.0)
+    num_path = config['path_num']
+    path_rate = config['path_rate']
+    row_paths = generate_candidate_paths(G_sub, num_paths=num_path, weight_increment=10, edge_coverage_threshold=path_rate)
 
     # 替换掉原始的节点ID为索引
     row_nodes = G_sub.nodes()

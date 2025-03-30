@@ -185,7 +185,7 @@ class PolicyNet(nn.Module):
         
         re_states = list(map(list, zip(*re_states))) # (batch, t+1)
         policy = torch.stack(policy, dim=1) # (batch, t, 3, p)
-        rewards = torch.tensor(rewards, dtype=torch.float32).transpose(0,1) # (batch, t)
+        rewards = torch.tensor(rewards, dtype=torch.float32, device='cuda').transpose(0,1) # (batch, t)
         return re_states, policy, rewards
 
 class ValueNet(nn.Module):

@@ -7,18 +7,24 @@ from models.model import PolicyNet, ValueNet, EmbeddingNet
 import numpy as np
 import pickle
 import random
-
-torch.autograd.set_detect_anomaly(True)
-
+from models.balance_model import Transformer_PolicyNet, Transformer_ValueNet
+# torch.autograd.set_detect_anomaly(True)
+from tqdm import tqdm
 # 定义训练和更新的类
 class DRLPCRTrainer:
     def __init__(self, initial_state, amounts, config):
         self.config = config
         self.amounts = amounts
         self.state = initial_state
+
         embedding_net = EmbeddingNet(config, initial_state)
-        self.policy_network = PolicyNet(config, embedding_net)
-        self.value_network = ValueNet(config, embedding_net)
+        # self.policy_network = PolicyNet(config, embedding_net)
+        # self.value_network = ValueNet(config, embedding_net)
+        self.policy_network = Transformer_PolicyNet(config)
+        self.value_network = Transformer_ValueNet(config, self.policy_network.transformer)
+
+
+
         self.simulator = Simulator(self.config, self.amounts)
         self.optimizer = torch.optim.Adam(list(self.policy_network.parameters()) + list(self.value_network.parameters()), lr=self.config['learning_rate'])
         self.eposide_num = 0
@@ -42,12 +48,11 @@ class DRLPCRTrainer:
         
     def save_data(self, trajectory):
         "保存模型"
-        torch.save(self.policy_network.state_dict(), 'saved_model/ep_{}/policy_network.pth'.format(self.eposide_num))
-        torch.save(self.value_network.state_dict(), 'saved_model/ep_{}/value_network.pth'.format(self.eposide_num))
+        torch.save(self.policy_network.state_dict(), 'saved_model/ep_{}_policy_network.pth'.format(self.eposide_num))
+        torch.save(self.value_network.state_dict(), 'saved_model/ep_{}_value_network.pth'.format(self.eposide_num))
         with open('data/trajectory/{}.plk'.format(self.eposide_num), 'wb') as f:
             pickle.dump(trajectory, f)
                 
-        
     def train_step(self, batch_data):
         """
         一次训练步骤，进行梯度更新
@@ -149,13 +154,17 @@ class DRLPCRTrainer:
         # 计算概率比
 
         # 计算目标策略网络的概率密度
-        prob_theta = (1 / (torch.sqrt(2 * torch.tensor(torch.pi)) * std_theta)) * torch.exp(-((action - mean_theta) ** 2) / (2 * std_theta ** 2))
+        # prob_theta = (1 / (torch.sqrt(2 * torch.tensor(torch.pi)) * std_theta)) * torch.exp(-((action - mean_theta) ** 2) / (2 * std_theta ** 2))
 
-        # 计算行为策略网络的概率密度
-        prob_behavior = (1 / (torch.sqrt(2 * torch.tensor(torch.pi)) * std_behavior)) * torch.exp(-((action - mean_behavior) ** 2) / (2 * std_behavior ** 2))
+        # # 计算行为策略网络的概率密度
+        # prob_behavior = (1 / (torch.sqrt(2 * torch.tensor(torch.pi)) * std_behavior)) * torch.exp(-((action - mean_behavior) ** 2) / (2 * std_behavior ** 2))
 
 
-        ratio = prob_theta / prob_behavior
+        # ratio = prob_theta / prob_behavior
+        log_prob_theta = -0.5 * ((action - mean_theta) / std_theta)**2 - torch.log(std_theta) - 0.5 * np.log(2 * torch.pi)
+        log_prob_behavior = -0.5 * ((action - mean_behavior) / std_behavior)**2 - torch.log(std_behavior) - 0.5 * np.log(2 * torch.pi)
+        ratio = torch.exp(log_prob_theta - log_prob_behavior)
+
         return ratio
 
     def calculate_advantage(self, rewards, values):
@@ -168,7 +177,7 @@ class DRLPCRTrainer:
         gamma = self.config['gamma'] #折扣因子
         J = self.config['J'] #优势函数向前看的步数
         batch_size, T = rewards.shape
-        advantages = torch.zeros((batch_size, T), dtype=torch.float32)
+        advantages = torch.zeros((batch_size, T), dtype=torch.float32, device="cuda")
 
         for t in range(T):
             for j in range(min(J, T - t)):
@@ -210,7 +219,7 @@ class DRLPCRTrainer:
         stds = policy_outputs[:, :, 1, :]  # 提取标准差
         entropy_per_step = 0.5 * torch.log(2 * torch.pi * torch.e * stds ** 2)
         total_entropy = torch.sum(entropy_per_step)
-        return -total_entropy / (batch_size * steps * p)
+        return total_entropy / (batch_size * steps * p)
 
 class Simulator:
     def __init__(self, config, amounts):
@@ -220,24 +229,33 @@ class Simulator:
         self.failed_transactions_num = 0
 
     def generate_trajectory(self, state, policy_network):
+        current_failed_transactions_num = 0
+        current_transactions_num = 0
         "生成交易信息"
         with torch.no_grad():
             self.state = state
             self.policy_network = policy_network
             trajectory = {'states': [], 'actions': [], 'rewards': []}
-            while len(trajectory["states"]) < self.config['buffer_size']:
-                t = 0
-                while t < self.config['trigger_threshold']:
-                    amount = random.choice(self.amounts)
-                    if not self.state.random_transaction(amount):
-                        t += 1   
-                        self.failed_transactions_num += 1
-                    self.transactions_num += 1
-                    if self.transactions_num % 1000 == 0:
-                        print("transactions_num: {}, failed_transactions_num: {}, failed rate:{:.2f}".format(self.transactions_num, self.failed_transactions_num, self.failed_transactions_num / self.transactions_num ))
-                states, actions, rewards = self.policy_network.caculate_T_steps([self.state])
-                trajectory['states'].append(states[0][:-1])
-                trajectory['actions'].extend(actions)
-                trajectory['rewards'].extend(rewards)
-                self.state = states[0][-1]
+            with tqdm(total=self.config['buffer_size'], desc="generating", leave=False) as pbar:
+                while len(trajectory["states"]) < self.config['buffer_size']:
+                    t = 0
+                    while t < self.config['trigger_threshold']:
+                        amount = random.choice(self.amounts) // 10
+                        if not self.state.random_transaction(amount):
+                            t += 1   
+                            self.failed_transactions_num += 1
+                            current_failed_transactions_num += 1
+                        current_transactions_num += 1
+                        self.transactions_num += 1
+
+                        # if self.transactions_num % 1000 == 0:
+                        #     print("transactions_num: {}, failed_transactions_num: {}, failed rate:{:.2f}".format(self.transactions_num, self.failed_transactions_num, self.current_failed_transactions_num / 1000 ))
+                    states, actions, rewards = self.policy_network.caculate_T_steps([self.state])
+                    pbar.update(1)
+                    trajectory['states'].append(states[0][:-1])
+                    trajectory['actions'].extend(actions)
+                    trajectory['rewards'].extend(rewards)
+                    self.state = states[0][-1]
+        print("\033[2K\033[G")
+        print("transactions_num: {}, failed_transactions_num: {}, failed rate:{:.2f}".format(self.transactions_num, self.failed_transactions_num, current_failed_transactions_num / current_transactions_num ))
         return trajectory
