@@ -76,7 +76,7 @@ class Transformer_PolicyNet(nn.Module):
             policy.append(policy_outputs)
             for idx, state in enumerate(states):
                 new_state = copy.copy(state).act(policy_outputs[idx][2])
-                tep_rewards.append(new_state.compute_reward() - state.compute_reward())
+                tep_rewards.append(state.comput_reward(new_state))
                 new_states.append(new_state)
             re_states.append(new_states)
             rewards.append(tep_rewards)

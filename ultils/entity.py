@@ -64,13 +64,23 @@ class State:
         normalized_weights = weights / np.sum(weights)  # 归一化权重
         self.weights = normalized_weights
 
-    def compute_reward(self):
+    def compute_balance_index(self):
         """
         计算当前状态的平衡度, 结果在[-1, 1]之间
         """
         ans = 0
         for channel in self.channels:
-            ans += (channel.weight1 - channel.weight2) / (channel.weight1 + channel.weight2)
+            ans += abs(channel.weight1 - channel.weight2) / (channel.weight1 + channel.weight2)
+        return ans/len(self.channels)
+    
+    def comput_reward(self, new_state):
+        """
+        计算新状态相对于当前状态的奖励
+        """
+        ans = 0
+        for idx, channel in enumerate(self.channels):
+            new_channel = new_state.channels[idx]
+            ans += (abs(channel.weight1 - channel.weight2) - abs(new_channel.weight1 - new_channel.weight2)) / (channel.weight1 + channel.weight2)
         return ans/len(self.channels)
 
     def random_transaction(self, amount):
