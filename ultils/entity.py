@@ -63,6 +63,7 @@ class State:
         weights = np.random.exponential(scale=1, size=self.node_num)
         normalized_weights = weights / np.sum(weights)  # 归一化权重
         self.weights = normalized_weights
+        self.attention_mask = self.compute_attention_mask()
 
     def compute_balance_index(self):
         """
@@ -73,7 +74,7 @@ class State:
             ans += abs(channel.weight1 - channel.weight2) / (channel.weight1 + channel.weight2)
         return ans/len(self.channels)
     
-    def comput_reward(self, new_state):
+    def compute_reward(self, new_state):
         """
         计算新状态相对于当前状态的奖励
         """
@@ -307,3 +308,28 @@ class State:
             path_feature.extend([0]*(padding_len-len(path_feature)))
             path_features.append(path_feature)
         return torch.tensor(channel_features, dtype=torch.float32, device="cuda"), torch.tensor(path_features, dtype=torch.float32, device="cuda")
+
+    def compute_attention_mask(self):
+        '''
+        根据channel和path的相关性,生成mask
+        对每个channel, 找到其包含的path, 并将其mask设为1,找到与其相邻的channel，将其mask设为1
+        对每个path, 找到其包含的channel, 并将其mask设为1,将其mask设为1
+        '''
+        mask = torch.zeros((len(self.channels) + len(self.paths), len(self.channels) + len(self.paths)), dtype=torch.float32, device="cuda")
+        l_path, l_channel = len(self.paths), len(self.channels)
+        for i in range(l_path + l_channel):
+            mask[i][i] = 1
+            for j in range(l_path):
+                mask[i][j] = 1
+        for path_idx, path in enumerate(self.paths):
+            for channel_idx in  path.channels:
+                mask[path_idx][l_path + channel_idx] = 1
+                mask[l_path + channel_idx][path_idx] = 1
+        
+        for channel_idx, channel in enumerate(self.channels):
+            for channel_idx2, channel2 in enumerate(self.channels):
+                if len(set([channel.nodeID1, channel.nodeID2, channel2.nodeID1, channel2.nodeID2])) <= 3:
+                    mask[l_path + channel_idx][l_path + channel_idx2] = 1
+                    mask[l_path + channel_idx2][l_path + channel_idx] = 1
+        mask = (mask == 0).bool()
+        return mask

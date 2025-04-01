@@ -4,6 +4,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 import copy
 
+class Transformer_with_Attenion(nn.TransformerEncoder):
+    def __init__(self, config):
+        head_num = config["balance_model_config"]["head_num"]
+        layer_num = config["balance_model_config"]["layer_num"]
+        d_model = config["balance_model_config"]["feature_dim"]
+        super(Transformer_with_Attenion, self).__init__(nn.TransformerEncoderLayer(d_model=d_model, nhead=head_num),
+            num_layers=layer_num)
+    
+
 class Transformer_PolicyNet(nn.Module):
     def __init__(self, config):
         super(Transformer_PolicyNet, self).__init__()
@@ -23,9 +32,9 @@ class Transformer_PolicyNet(nn.Module):
         self.channel_norm = nn.LayerNorm(d_model) # 通道特征归一化
         self.num_path = config["path_num"]
 
-    def forward(self, x):
+    def forward(self, x, src_mask=None):
         # x: [batch_size, seq_length, d_model]
-        output = self.transformer(x.permute(1, 0, 2))  # [seq_length, batch_size, d_model]
+        output = self.transformer(x.permute(1, 0, 2),mask=src_mask)  # [seq_length, batch_size, d_model]
         output = output.permute(1, 0, 2)  # [batch_size, seq_length, d_model]
         output = output[:, :self.num_path, :]  # 只取前num_path个路径的特征，即p个路径的特征
         output = self.fc1(output).transpose(1,2)  # [batch_size,2 , num_path]
@@ -56,8 +65,12 @@ class Transformer_PolicyNet(nn.Module):
         channel_features = self.channel_norm(channel_features)  # 归一化通道特征
         path_features = self.path_norm(path_features)            # 归一化路径特征
 
-        return self.forward(torch.cat([path_features, channel_features], dim = 1))    # (batch, 3, p)
-    
+        return self.forward(torch.cat([path_features, channel_features], dim = 1), src_mask=states[-1].attention_mask)    # (batch, 3, p)
+
+    def caculate_next_state(self, state):
+        re_states, policy, rewards = self.caculate_T_steps([state])
+        return re_states[0][-1]
+
     def caculate_T_steps(self, states):
         '''
         计算T步policy
@@ -76,7 +89,7 @@ class Transformer_PolicyNet(nn.Module):
             policy.append(policy_outputs)
             for idx, state in enumerate(states):
                 new_state = copy.copy(state).act(policy_outputs[idx][2])
-                tep_rewards.append(state.comput_reward(new_state))
+                tep_rewards.append(state.compute_reward(new_state))
                 new_states.append(new_state)
             re_states.append(new_states)
             rewards.append(tep_rewards)
@@ -99,9 +112,9 @@ class Transformer_ValueNet(nn.Module):
         self.path_norm = nn.LayerNorm(d_model)   # 路径特征归一化
         self.channel_norm = nn.LayerNorm(d_model) # 通道特征归一化
 
-    def forward(self, x):
+    def forward(self, x, src_mask=None):
         # x: [batch_size, seq_length, d_model]
-        output = self.transformer(x.permute(1, 0, 2))  # [seq_length, batch_size, d_model]
+        output = self.transformer(x.permute(1, 0, 2), mask=src_mask)  # [seq_length, batch_size, d_model]
         output = output.permute(1, 0, 2)  # [batch_size, seq_length, d_model]
         pooled_output = torch.mean(output, dim=1)  # 平均池化
         output = self.fc(pooled_output)  # [batch_size, output_dim]
@@ -126,4 +139,4 @@ class Transformer_ValueNet(nn.Module):
         channel_features = self.channel_norm(channel_features)  # 归一化通道特征
         path_features = self.path_norm(path_features)            # 归一化路径特征
 
-        return self.forward(torch.cat([path_features, channel_features], dim = 1))    # (batch, 3, p)
+        return self.forward(torch.cat([path_features, channel_features], dim = 1), src_mask=states[-1].attention_mask)    # (batch, 3, p)

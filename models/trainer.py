@@ -12,16 +12,18 @@ from models.balance_model import Transformer_PolicyNet, Transformer_ValueNet
 from tqdm import tqdm
 # 定义训练和更新的类
 class DRLPCRTrainer:
-    def __init__(self, initial_state, amounts, config):
+    def __init__(self, initial_state, amounts, config, net="TPCR"):
         self.config = config
         self.amounts = amounts
         self.state = initial_state
-
         embedding_net = EmbeddingNet(config, initial_state)
-        # self.policy_network = PolicyNet(config, embedding_net)
-        # self.value_network = ValueNet(config, embedding_net)
-        self.policy_network = Transformer_PolicyNet(config)
-        self.value_network = Transformer_ValueNet(config, self.policy_network.transformer)
+        if net == "TPCR":
+            self.policy_network = Transformer_PolicyNet(config)
+            self.value_network = Transformer_ValueNet(config, self.policy_network.transformer)
+        else:
+            self.policy_network = PolicyNet(config, embedding_net)
+            self.value_network = ValueNet(config, embedding_net)
+
 
 
 
@@ -240,7 +242,7 @@ class Simulator:
                 while len(trajectory["states"]) < self.config['buffer_size']:
                     t = 0
                     while t < self.config['trigger_threshold']:
-                        amount = random.choice(self.amounts) // 10
+                        amount = random.choice(self.amounts)
                         if not self.state.random_transaction(amount):
                             t += 1   
                             self.failed_transactions_num += 1
@@ -257,5 +259,5 @@ class Simulator:
                     trajectory['rewards'].extend(rewards)
                     self.state = states[0][-1]
         print("\033[2K\033[G")
-        print("transactions_num: {}, failed_transactions_num: {}, failed rate:{:.2f}".format(self.transactions_num, self.failed_transactions_num, current_failed_transactions_num / current_transactions_num ))
+        print("transactions_num: {}, failed_transactions_num: {}, success rate:{:.2f}".format(self.transactions_num, self.failed_transactions_num, 1 - current_failed_transactions_num / current_transactions_num ))
         return trajectory

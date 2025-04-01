@@ -48,7 +48,7 @@ class GRUCell2(nn.Module):
         path_features = path_features.transpose(1, 0)
         final_channel_feature = []
         for channel_idx, channel in enumerate(channel_features):
-            f = torch.zeros(channel_features[0].shape)
+            f = torch.zeros(channel_features[0].shape, device=path_features.device)
             for path_idx in self.channels[channel_idx].path:
                 f = f + path_features[path_idx]
             channel = self.gru(f.unsqueeze(1), channel.unsqueeze(0))
@@ -66,8 +66,8 @@ class Readout(nn.Module):
     def forward(self, x):
         # x: [B, num_paths, hidden_dim]
         batch_size = x.shape[0]
-        h0 = torch.zeros(1, batch_size, self.hidden_dim2)
-        c0 = torch.zeros(1, batch_size, self.hidden_dim2)
+        h0 = torch.zeros(1, batch_size, self.hidden_dim2, device="cuda")
+        c0 = torch.zeros(1, batch_size, self.hidden_dim2, device="cuda")
         x = F.relu(self.fc1(x))
         output, (hn, cn) = self.lstm(x, (h0, c0))
         return self.fc2(hn.squeeze(0))  # (batch, outdim)
@@ -158,7 +158,11 @@ class PolicyNet(nn.Module):
         channel_features = torch.stack(batch_channel_features, dim=0)  # (batch, num_channels, 32)
         path_features = torch.stack(batch_path_features, dim=0)  # (batch, num_paths, 32)   
         return self.forward(channel_features, path_features)    # (batch, 3, p)
-        
+    
+    def caculate_next_state(self, state):
+        re_states, policy, rewards = self.caculate_T_steps([state])
+        return re_states[0][-1]
+
     def caculate_T_steps(self, states):
         '''
         计算T步policy

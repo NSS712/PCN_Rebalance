@@ -112,16 +112,6 @@ def create_graph(nodes, channels, bitcoin_values=None):
     largest_cc = max(connected_components, key=len)
     G_largest_cc = G.subgraph(largest_cc).copy()
     print(f"最大连通分量包含 {G_largest_cc.number_of_nodes()} 个节点和 {G_largest_cc.number_of_edges()} 条边")
-
-    # 迭代移除度为1的节点
-    while True:
-        degree_one_nodes = [node for node in G_largest_cc.nodes() if G_largest_cc.degree(node) == 1]
-        if not degree_one_nodes:
-            break
-        G_largest_cc.remove_nodes_from(degree_one_nodes)
-        print(f"移除 {len(degree_one_nodes)} 个度为1的节点")
-    
-    print(f"处理后的图包含 {G_largest_cc.number_of_nodes()} 个节点和 {G_largest_cc.number_of_edges()} 条边")
     return G_largest_cc
 
 def visualize_graph(G, output_path=None, max_nodes=None):
@@ -256,7 +246,7 @@ def generate_candidate_paths(G, num_paths=10, weight_increment=10, edge_coverage
     
     return paths
 
-def pross_data():
+def pross_data(sample=100,need_path=True):
     # 设置文件路径
     config = json.load(open("config/DRLPCR.json", "r"))
     base_dir = "d:/Doc/毕设/code/data/raw"
@@ -267,17 +257,25 @@ def pross_data():
     # 加载数据
     nodes = load_nodes(nodes_file)
     channels = load_channels(channels_file)
-    bitcoin_vsalues = load_bitcoin_values(bitcoin_values_file)
+    bitcoin_values = load_bitcoin_values(bitcoin_values_file)
     
     # 创建图,只保留最大连通分量
     G = create_graph(nodes, channels)
-    G_sub = sample_graph(G, config["sample_node_num"])
+    if sample:
+        G_sub = sample_graph(G, sample)
+    else:
+        G_sub = G
+    
+    # 迭代移除度为1的节点
+    G_sub = romve_degree_one_nodes(G_sub)
     # visualize_graph(G_sub)
-    # 生成循环路径
-    num_path = config['path_num']
-    path_rate = config['path_rate']
-    row_paths = generate_candidate_paths(G_sub, num_paths=num_path, weight_increment=10, edge_coverage_threshold=path_rate)
-
+    if need_path:
+        # 生成循环路径
+        num_path = config['path_num']
+        path_rate = config['path_rate']
+        row_paths = generate_candidate_paths(G_sub, num_paths=num_path, weight_increment=10, edge_coverage_threshold=path_rate)
+    else:
+        row_paths = []
     # 替换掉原始的节点ID为索引
     row_nodes = G_sub.nodes()
     raw_channels = G_sub.edges(data=True)
@@ -309,8 +307,18 @@ def pross_data():
         for node in raw_path['path']:
             path.nodes.append(nodeID_to_index[node])
         paths.append(path)
-    state = State(len(row_nodes), channels, paths)
-    return state, bitcoin_vsalues
+
+    # 计算平均通道余额
+    total_capacity = sum((channel.weight1 + channel.weight2) for channel in channels)
+    average_capacity = total_capacity / len(channels)
+    print(f"平均通道余额: {average_capacity:.2f}")
+
+    # 计算平均交易金额
+    average_transaction_amount = sum(bitcoin_values) / len(bitcoin_values)
+    print(f"平均交易金额: {average_transaction_amount:.2f}")
+
+    state = State(G_sub.number_of_nodes(), channels, paths)
+    return state, bitcoin_values
 
 def sample_graph(G, n):
     """
@@ -361,15 +369,20 @@ def sample_graph(G, n):
     # 创建子图
     G_sampled = G.subgraph(sampled_nodes).copy()
     print(f"采样后的图包含 {G_sampled.number_of_nodes()} 个节点和 {G_sampled.number_of_edges()} 条边")
-    
-    # 迭代移除度为1的节点
+
+    return G_sampled
+
+def romve_degree_one_nodes(G_sampled):
+    """
+    迭代移除度为1的节点
+    """
     while True:
-        degree_one_nodes = [node for node in G_sampled.nodes() if G_sampled.degree(node) == 1]
-        if not degree_one_nodes:
-            break
-        G_sampled.remove_nodes_from(degree_one_nodes)
-        print(f"移除 {len(degree_one_nodes)} 个度为1的节点")
-    
+            degree_one_nodes = [node for node in G_sampled.nodes() if G_sampled.degree(node) == 1]
+            if not degree_one_nodes:
+                break
+            G_sampled.remove_nodes_from(degree_one_nodes)
+            print(f"移除 {len(degree_one_nodes)} 个度为1的节点")
+        
     print(f"处理后的图包含 {G_sampled.number_of_nodes()} 个节点和 {G_sampled.number_of_edges()} 条边")
     return G_sampled
 

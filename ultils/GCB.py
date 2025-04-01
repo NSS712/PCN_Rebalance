@@ -1,4 +1,4 @@
-from entity import *
+from ultils.entity import *
 
 def compute_node_gini(node_id, state):
     """
@@ -124,12 +124,23 @@ def gcb_rebalance(state, imbalance_threshold=0.3):
     # 步骤5：执行实际交易
     for tx in transactions:
         try:
-            state.route_transaction(tx['channels'], abs(tx['amount']), 
-                                   [tx['direction']]*len(tx['channels']))
+            # 直接修改通道权重
+            for ch_id in tx['channels']:
+                channel = next(c for c in state.channels if c.ID == ch_id)
+                if tx['direction'] == 1:
+                    channel.weight1 -= tx['amount']
+                    channel.weight2 += tx['amount']
+                else:
+                    channel.weight1 += tx['amount']
+                    channel.weight2 -= tx['amount']
+                
+                # 确保权重非负
+                channel.weight1 = max(channel.weight1, 0)
+                channel.weight2 = max(channel.weight2, 0)
         except:
             continue
             
-    return transactions
+    return state
 
 # 测试用例
 def test_gcb_rebalance():
@@ -163,4 +174,4 @@ def test_gcb_rebalance():
     
     print("所有测试用例通过！")
 
-test_gcb_rebalance()
+# test_gcb_rebalance()

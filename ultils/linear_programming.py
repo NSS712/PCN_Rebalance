@@ -56,7 +56,18 @@ def balance_channels(state):
         method='highs'
     )
     
-    return result.x[:C] if result.success else np.zeros(C)
+    if not result.success:
+        print("线性规划求解失败！")
+        return state
+    
+    x = result.x[:C]  # 提取前C个变量作为通道调整量
+    
+    new_channels = []
+    for i, ch in enumerate(channels):
+        new_ch = Channel(ch.ID, ch.nodeID1, ch.nodeID2, ch.weight1 - x[i], ch.weight2 + x[i])
+        new_channels.append(new_ch)
+    
+    return State(state.node_num, new_channels, state.paths.copy())
 
 
 if __name__=="__main__":
@@ -92,30 +103,4 @@ if __name__=="__main__":
     print(f"初始平衡度: {state.compute_balance_index():.3f}")
 
     # 执行平衡
-    x = balance_channels(state)
-
-    print("\n=== 调整方案 ===")
-    print(f"各通道调整量: {[round(v,1) for v in x]}")
-
-    # 应用调整
-    for i, ch in enumerate(channels):
-        ch.weight1 -= x[i]
-        ch.weight2 += x[i]
-
-    # 验证约束
-    print("\n=== 验证结果 ===")
-    # 1. 节点总余额不变
-    original_total = sum(ch.weight1 + ch.weight2 for ch in channels)
-    new_total = sum(ch.weight1 + ch.weight2 for ch in channels)
-    print(f"总余额是否守恒: {abs(original_total - new_total) < 1e-6}")
-
-    # 2. 节点净流量为0
-    node_flows = [0]*5
-    for i, ch in enumerate(channels):
-        node_flows[ch.nodeID1] -= x[i]
-        node_flows[ch.nodeID2] += x[i]
-    print(f"节点净流量: {[round(f,2) for f in node_flows]}")
-
-    # 3. 平衡度优化结果
-    print(f"最终平衡度: {state.compute_balance_index():.3f}")
-    print("各通道新余额差:", [round(ch.weight1 - ch.weight2, 2) for ch in channels])
+    new_state = balance_channels(state)
