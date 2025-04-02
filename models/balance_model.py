@@ -4,13 +4,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import copy
 
-class Transformer_with_Attenion(nn.TransformerEncoder):
-    def __init__(self, config):
-        head_num = config["balance_model_config"]["head_num"]
-        layer_num = config["balance_model_config"]["layer_num"]
-        d_model = config["balance_model_config"]["feature_dim"]
-        super(Transformer_with_Attenion, self).__init__(nn.TransformerEncoderLayer(d_model=d_model, nhead=head_num),
-            num_layers=layer_num)
+# class Transformer_with_Attenion(nn.TransformerEncoder):
+#     def __init__(self, config):
+#         head_num = config["balance_model_config"]["head_num"]
+#         layer_num = config["balance_model_config"]["layer_num"]
+#         d_model = config["balance_model_config"]["feature_dim"]
+#         super(Transformer_with_Attenion, self).__init__(nn.TransformerEncoderLayer(d_model=d_model, nhead=head_num),
+#             num_layers=layer_num)
     
 
 class Transformer_PolicyNet(nn.Module):

@@ -1,4 +1,8 @@
 test.py
 co.md
 data/trajectory/
+data/losses.pkl
 saved_model/
+result/
+test.py
+show.ipynb

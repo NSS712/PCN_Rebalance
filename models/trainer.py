@@ -24,9 +24,6 @@ class DRLPCRTrainer:
             self.policy_network = PolicyNet(config, embedding_net)
             self.value_network = ValueNet(config, embedding_net)
 
-
-
-
         self.simulator = Simulator(self.config, self.amounts)
         self.optimizer = torch.optim.Adam(list(self.policy_network.parameters()) + list(self.value_network.parameters()), lr=self.config['learning_rate'])
         self.eposide_num = 0
@@ -45,15 +42,20 @@ class DRLPCRTrainer:
         for step in range(self.config['buffer_size'] // batch_size):
             batch = {'states': trajectory['states'][step*batch_size:(step+1)*batch_size], 'actions': trajectory['actions'][step*batch_size:(step+1)*batch_size], 'rewards': trajectory['rewards'][step*batch_size:(step+1)*batch_size]}
             self.train_step(batch)
-        self.save_data(trajectory)
+        if self.eposide_num % 20 == 0:
+            self.save_data(trajectory)
         self.eposide_num += 1
+        with open('data/losses.pkl', 'wb') as f:
+            pickle.dump(self.losses, f)
+
+
         
     def save_data(self, trajectory):
         "保存模型"
         torch.save(self.policy_network.state_dict(), 'saved_model/ep_{}_policy_network.pth'.format(self.eposide_num))
         torch.save(self.value_network.state_dict(), 'saved_model/ep_{}_value_network.pth'.format(self.eposide_num))
-        with open('data/trajectory/{}.plk'.format(self.eposide_num), 'wb') as f:
-            pickle.dump(trajectory, f)
+        # with open('data/trajectory/{}.plk'.format(self.eposide_num), 'wb') as f:
+        #     pickle.dump(trajectory, f)
                 
     def train_step(self, batch_data):
         """
@@ -258,6 +260,6 @@ class Simulator:
                     trajectory['actions'].extend(actions)
                     trajectory['rewards'].extend(rewards)
                     self.state = states[0][-1]
-        print("\033[2K\033[G")
+        # print("\033[2K\033[G")
         print("transactions_num: {}, failed_transactions_num: {}, success rate:{:.2f}".format(self.transactions_num, self.failed_transactions_num, 1 - current_failed_transactions_num / current_transactions_num ))
         return trajectory

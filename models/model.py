@@ -29,7 +29,7 @@ class GRUCell1(nn.Module):
             for channel_idx in self.paths[path_idx].channels:
                 final_channel_feature.append(channel_features[channel_idx])
             final_channel_feature = torch.stack(final_channel_feature, dim=0).transpose(0,1) #变成(batch, T, 32)
-            path_feature = self.gru(final_channel_feature, path.unsqueeze(0))
+            path_feature = self.gru(final_channel_feature, path.unsqueeze(0).contiguous())
             path_feature = path_feature[-1].squeeze(0)
             final_path_feature.append(path_feature)
         path_features = torch.stack(final_path_feature, dim=1) #变成(batch,num_path, 32)
@@ -51,7 +51,7 @@ class GRUCell2(nn.Module):
             f = torch.zeros(channel_features[0].shape, device=path_features.device)
             for path_idx in self.channels[channel_idx].path:
                 f = f + path_features[path_idx]
-            channel = self.gru(f.unsqueeze(1), channel.unsqueeze(0))
+            channel = self.gru(f.unsqueeze(1), channel.unsqueeze(0).contiguous())
             final_channel_feature.append(channel[-1].squeeze(0))
         return torch.stack(final_channel_feature, dim=1)
 

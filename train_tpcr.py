@@ -20,6 +20,6 @@ if __name__ == "__main__":
     for eposide in range(config['eposide_num']):
         trainer.train_eposide()
         throughout_test(initial_state_copy, amounts, balance_method=trainer.policy_network.caculate_next_state)
-    
+
 
 

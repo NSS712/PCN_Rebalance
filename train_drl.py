@@ -11,12 +11,9 @@ if __name__ == "__main__":
     print(device)
     config = json.load(open('config/DRLPCR.json'))
     initial_state, amounts = load_saved_data()
-    trainer = DRLPCRTrainer(initial_state, amounts, config)
-    initial_state_copy = copy.copy(initial_state)
+    trainer = DRLPCRTrainer(copy.copy(initial_state), amounts, config, net="DPLPCR")
     # throughout_test(initial_state_copy, amounts,balance_method=None)
     for eposide in range(config['eposide_num']):
         trainer.train_eposide()
-        throughout_test(initial_state_copy, amounts, balance_method=trainer.policy_network.caculate_next_state)
+        throughout_test(copy.copy(initial_state), amounts, balance_method=trainer.policy_network.caculate_next_state)
     
-
-

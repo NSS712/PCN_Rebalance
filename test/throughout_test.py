@@ -35,7 +35,7 @@ def throughout_test(state, bit_values, balance_method=balance_channels):
         #     print(f"当前交易次数: {transaction_num}, 成功次数: {success_num}, 吞吐量: {throughout}")
         success_res.append(success_num)
         throughout_res.append(throughout)
-    print("\033[2K\033[G")
+    # print("\033[2K\033[G")
     print(f"成功率: {success_num / transaction_num}")
     return success_res, throughout_res
  

@@ -1,7 +1,7 @@
 {
-    "eposide_num": 100,
-    "batch_size": 16,
-    "buffer_size": 64,
+    "eposide_num": 10000,
+    "batch_size": 64,
+    "buffer_size": 256,
     "trigger_threshold": 25,
     "path_num": 100,
     "path_rate": 0.85,
@@ -10,7 +10,7 @@
     "learning_rate": 0.001,
     "gamma": 0.95,
     "sample_node_num": 200,
-    "J": 25,
+    "J": 15,
     "epsilon": 0.2,
     "c1": 0.25,
     "c2": 0.2,
@@ -24,6 +24,6 @@
         "feature_dim": 32,
         "iterations":5,
         "head_num": 4,
-        "layer_num": 3
+        "layer_num": 2
     }
 }
