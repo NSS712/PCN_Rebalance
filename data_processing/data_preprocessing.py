@@ -11,7 +11,7 @@ import pickle
 from networkx.classes.filters import no_filter
 from ultils.entity import State, Path, Channel
 
-def load_nodes(file_path):
+def load_lighting_nodes(file_path):
     """
     加载节点数据
     """
@@ -28,7 +28,7 @@ def load_nodes(file_path):
     print(f"成功加载 {len(nodes)} 个节点")
     return nodes
 
-def load_channels(file_path):
+def load_lighting_channels(file_path):
     """
     加载通道数据
     """
@@ -51,6 +51,44 @@ def load_channels(file_path):
     print(f"成功加载 {len(channels)} 个通道")
     return channels
 
+def load_ripple_data():
+    nodes = set()
+    channels = []
+    with open('data/ripple/ripple-lcc.graph_CREDIT_LINKS', 'r') as f:
+        for line in f:
+            source = int(line.split()[0])
+            destination = int(line.split()[1])
+            nodes.add(source)
+            nodes.add(destination)
+            total_channel_cap = (float(line.split()[3])-float(line.split()[2])) + (float(line.split()[4])-float(line.split()[3]))
+            if total_channel_cap > 0:
+                if total_channel_cap > 1000000:
+                    total_channel_cap = 1000000
+                channel = {
+                        "source": source, 
+                        "destination": destination, 
+                        "short_channel_id": source, 
+                        "public": True, 
+                        "satoshis": total_channel_cap,
+                        "active": True
+                        }
+                channels.append(channel)
+                nodes.add(source)
+                nodes.add(destination)
+
+    print(f"成功加载 {len(nodes)} 个节点")
+    print(f"成功加载 {len(channels)} 个通道")
+    
+    values = []
+    with open('data/ripple/transaction_values.txt', 'r') as f:
+        for line in f:
+            value = int(line.split()[0])
+            if value > 1000000:
+                value = 1000000
+            values.append(value)
+    print(f"成功加载 {len(values)} 个交易价值")
+    return nodes, channels, values
+				
 def load_bitcoin_values(file_path):
     """
     加载比特币价值数据
@@ -77,7 +115,7 @@ def create_graph(nodes, channels, bitcoin_values=None):
     
     # 添加节点
     for node_id in nodes:
-        alias = node_id[:10] + '...'
+        alias = str(node_id)[:10] + '...'
         G.add_node(node_id, alias=alias)
     
     # 添加边（通道）
@@ -89,10 +127,10 @@ def create_graph(nodes, channels, bitcoin_values=None):
             continue
         node1 = channel.get('source')
         node2 = channel.get('destination')
-        shot_channal_id = channel.get('short_channel_id')
-        if shot_channal_id in shot_channal_id_set:
-            continue
-        shot_channal_id_set.add(shot_channal_id)
+        # shot_channal_id = channel.get('short_channel_id')
+        # if shot_channal_id in shot_channal_id_set:
+        #     continue
+        # shot_channal_id_set.add(shot_channal_id)
         # 确保节点存在
         if node1 and node2 and node1 in nodes and node2 in nodes:
             capacity = int(channel.get('satoshis', 0))
@@ -246,7 +284,7 @@ def generate_candidate_paths(G, num_paths=10, weight_increment=10, edge_coverage
     
     return paths
 
-def pross_data(sample=100,need_path=True):
+def pross_data(sample=100,need_path=True,dataset='lighting'):
     # 设置文件路径
     config = json.load(open("config/DRLPCR.json", "r"))
     base_dir = "d:/Doc/毕设/code/data/raw"
@@ -255,9 +293,14 @@ def pross_data(sample=100,need_path=True):
     bitcoin_values_file = os.path.join(base_dir, "BitcoinVal.txt")
     
     # 加载数据
-    nodes = load_nodes(nodes_file)
-    channels = load_channels(channels_file)
-    bitcoin_values = load_bitcoin_values(bitcoin_values_file)
+    if dataset == 'lighting':
+        nodes = load_lighting_nodes(nodes_file)
+        channels = load_lighting_channels(channels_file)
+        bitcoin_values = load_bitcoin_values(bitcoin_values_file)
+    elif dataset == 'ripple':
+        nodes, channels, bitcoin_values = load_ripple_data()
+    else:
+        raise ValueError("Invalid dataset name.")
     
     # 创建图,只保留最大连通分量
     G = create_graph(nodes, channels)

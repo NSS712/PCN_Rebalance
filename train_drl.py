@@ -15,5 +15,6 @@ if __name__ == "__main__":
     # throughout_test(initial_state_copy, amounts,balance_method=None)
     for eposide in range(config['eposide_num']):
         trainer.train_eposide()
-        throughout_test(copy.copy(initial_state), amounts, balance_method=trainer.policy_network.caculate_next_state)
+        if (eposide - 1) % 20 == 0:
+            throughout_test(copy.copy(initial_state), amounts, balance_method=trainer.policy_network.caculate_next_state)
     
