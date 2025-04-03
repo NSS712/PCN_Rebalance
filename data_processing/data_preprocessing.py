@@ -60,7 +60,7 @@ def load_ripple_data():
             destination = int(line.split()[1])
             nodes.add(source)
             nodes.add(destination)
-            total_channel_cap = (float(line.split()[3])-float(line.split()[2])) + (float(line.split()[4])-float(line.split()[3]))
+            total_channel_cap = int((float(line.split()[3])-float(line.split()[2])) + (float(line.split()[4])-float(line.split()[3])))
             if total_channel_cap > 0:
                 if total_channel_cap > 1000000:
                     total_channel_cap = 1000000
