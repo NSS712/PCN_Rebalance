@@ -16,7 +16,7 @@ def save_data(dataset='lightning', sample=200):
     else:
         raise NotImplementedError
 
-def load_saved_data(dataset='lightning'):
+def load_saved_data(dataset='lighting'):
     if dataset == "lighting":
         with open('data/processed/data.pkl', 'rb') as f:
             state = pickle.load(f)
